@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Núcleo administrativo del ERP modular de Abicorp" />
+    <title>Abicorp ERP</title>
+    <link rel="icon" type="image/png" href="./assets/abicorp-logo.png" />
+    <link rel="stylesheet" href="./styles.css?v=20260730-32" />
+  </head>
+  <body>
+    <div id="loading-screen" class="loading-screen" aria-live="polite">
+      <img class="brand-logo large" src="./assets/abicorp-logo.png" alt="Abicorp" />
+      <div class="loading-line"><span></span></div>
+      <p>Preparando tu espacio de trabajo</p>
+    </div>
+
+    <main id="login-screen" class="login-screen hidden">
+      <section class="login-story" aria-label="Presentación">
+        <div class="story-header"><img class="brand-logo" src="./assets/abicorp-logo.png" alt="" /><strong>ABICORP</strong></div>
+        <div class="story-content">
+          <span class="eyebrow light">SISTEMA OPERATIVO · 2026</span>
+          <h1>Tu operación completa,<br />en un solo lugar</h1>
+          <p>Una plataforma modular para conectar personas, procesos y decisiones con trazabilidad real.</p>
+          <div class="module-carousel" id="login-module-carousel" role="region" aria-roledescription="carrusel" aria-label="Módulos del sistema" tabindex="0">
+            <div class="module-carousel-viewport">
+              <div class="module-carousel-track" id="login-module-track">
+                <div class="module-carousel-page" role="group" aria-label="1 de 5">
+                  <article><span>▦</span><strong>Datos maestros</strong><small>La información base</small></article>
+                  <article><span>▤</span><strong>Almacén</strong><small>Existencias y movimientos</small></article>
+                  <article><span>↘</span><strong>Compras</strong><small>Solicitudes y órdenes</small></article>
+                </div>
+                <div class="module-carousel-page" role="group" aria-label="2 de 5">
+                  <article><span>↗</span><strong>Ventas</strong><small>Del contacto al cobro</small></article>
+                  <article><span>⚒</span><strong>Producción</strong><small>Órdenes y operaciones</small></article>
+                  <article><span>✓</span><strong>Calidad</strong><small>Inspección y liberación</small></article>
+                </div>
+                <div class="module-carousel-page" role="group" aria-label="3 de 5">
+                  <article><span>⚙</span><strong>Mantenimiento</strong><small>Equipos y trabajos</small></article>
+                  <article><span>⇢</span><strong>Logística</strong><small>Preparación y entrega</small></article>
+                  <article><span>$</span><strong>Finanzas</strong><small>Ingresos y egresos</small></article>
+                </div>
+                <div class="module-carousel-page" role="group" aria-label="4 de 5">
+                  <article><span>●</span><strong>Tareas</strong><small>Flujos y aprobaciones</small></article>
+                  <article><span>⌂</span><strong>Dashboards</strong><small>Tu espacio de trabajo</small></article>
+                  <article><span>◇</span><strong>Núcleo</strong><small>Control del sistema</small></article>
+                </div>
+                <div class="module-carousel-page" role="group" aria-label="5 de 5">
+                  <article><span>✚</span><strong>Seguridad y salud</strong><small>Prevención y cumplimiento</small></article>
+                  <article><span>♙</span><strong>Recursos humanos</strong><small>Personas y asistencia</small></article>
+                  <article><span>◉</span><strong>Indicadores</strong><small>Decisiones con trazabilidad</small></article>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer class="story-footer">
+          <span>NÚCLEO DEL SISTEMA</span>
+          <span>Todos los derechos reservados M4rk3z Solutions</span>
+          <span>VERSIÓN 0.1</span>
+        </footer>
+      </section>
+      <section class="login-panel">
+        <form id="login-form" class="login-card">
+          <span class="eyebrow">ACCESO SEGURO</span>
+          <h2>Bienvenido de nuevo</h2>
+          <p class="muted">Ingresa tus credenciales para continuar.</p>
+          <label>Usuario<input id="login-username" name="username" autocomplete="username" required autofocus /></label>
+          <label>Contraseña
+            <span class="password-field"><input id="login-password" name="password" type="password" autocomplete="current-password" required /><button class="peek" type="button" data-peek="login-password" data-peek-label="contraseña" aria-label="Mostrar contraseña" aria-pressed="false">Ver</button></span>
+          </label>
+          <p id="login-error" class="form-error hidden" role="alert"></p>
+          <button class="button primary wide" type="submit"><span>Entrar al sistema</span><span aria-hidden="true">→</span></button>
+          <div class="login-help"><span class="status-dot"></span>Base local protegida y disponible</div>
+        </form>
+      </section>
+    </main>
+
+    <div id="app-shell" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="sidebar-brand"><img class="brand-logo" src="./assets/abicorp-logo.png" alt="" /><div><strong>ABICORP</strong><span>ERP MODULAR</span></div></div>
+        <nav id="main-nav" aria-label="Navegación principal">
+          <button class="nav-item nav-direct active" data-view="dashboard" data-permission="dashboard.view"><span class="nav-icon">⌂</span>Dashboards</button>
+          <section class="nav-group" data-nav-group>
+            <button class="nav-group-toggle" type="button" aria-expanded="false"><span>NÚCLEO</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+            <div class="nav-group-items">
+              <button class="nav-item" data-view="catalogs" data-permission="catalogs.view"><span class="nav-icon">▦</span>Catálogos generales</button>
+              <button class="nav-item" data-view="folios" data-permission="folios.view"><span class="nav-icon">№</span>Folios y consecutivos</button>
+              <button class="nav-item" data-view="documents" data-permission="documents.view"><span class="nav-icon">□</span>Archivos y documentos</button>
+              <button class="nav-item" data-view="notifications" data-permission="notifications.view"><span class="nav-icon">○</span>Notificaciones</button>
+              <button class="nav-item" data-view="audit" data-permission="audit.view"><span class="nav-icon">≡</span>Bitácora</button>
+            </div>
+          </section>
+          <button class="nav-item nav-direct" data-view="masters_hub" data-permission="masters.view"><span class="nav-icon">▦</span>Datos maestros</button>
+          <button class="nav-item nav-direct" data-view="inventory_stock" data-permission="inventory.view"><span class="nav-icon">▤</span>Almacén</button>
+          <button class="nav-item nav-direct" data-view="purchases_control" data-permission="purchases.view"><span class="nav-icon">↘</span>Compras</button>
+          <button class="nav-item nav-direct" data-view="sales_control" data-permission="sales.view"><span class="nav-icon">↗</span>Ventas</button>
+          <button class="nav-item nav-direct" data-view="production_control" data-permission="production.view"><span class="nav-icon">⚒</span>Producción</button>
+          <button class="nav-item nav-direct" data-view="quality_control" data-permission="quality.view"><span class="nav-icon">✓</span>Calidad</button>
+          <button class="nav-item nav-direct" data-view="maintenance_control" data-permission="maintenance.view"><span class="nav-icon">⚙</span>Mantenimiento</button>
+          <button class="nav-item nav-direct" data-view="safety_control" data-permission="safety.view"><span class="nav-icon">✚</span>Seguridad y salud</button>
+          <button class="nav-item nav-direct" data-view="hr_control" data-permission="hr.view"><span class="nav-icon">♙</span>Recursos humanos</button>
+          <button class="nav-item nav-direct" data-view="logistics_control" data-permission="logistics.view"><span class="nav-icon">⇢</span>Logística</button>
+          <button class="nav-item nav-direct" data-view="finance_control" data-permission="finance.view"><span class="nav-icon">$</span>Finanzas</button>
+          <section class="nav-group" data-nav-group>
+            <button class="nav-group-toggle" type="button" aria-expanded="false"><span>TAREAS Y APROBACIONES</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+            <div class="nav-group-items">
+              <button class="nav-item" data-view="tasks_assigned" data-permission="tasks.view"><span class="nav-icon">✓</span>Tareas asignadas</button>
+              <button class="nav-item" data-view="tasks_flows" data-permission="tasks.view"><span class="nav-icon">⇢</span>Flujos de aprobación</button>
+              <button class="nav-item" data-view="tasks_comments" data-permission="tasks.view"><span class="nav-icon">◌</span>Comentarios</button>
+              <button class="nav-item" data-view="tasks_rejections" data-permission="tasks.view"><span class="nav-icon">×</span>Rechazos</button>
+              <button class="nav-item" data-view="tasks_reassignments" data-permission="tasks.view"><span class="nav-icon">↝</span>Reasignaciones</button>
+              <button class="nav-item" data-view="tasks_deadlines" data-permission="tasks.view"><span class="nav-icon">⌚</span>Fechas límite</button>
+              <button class="nav-item" data-view="tasks_history" data-permission="tasks.view"><span class="nav-icon">≡</span>Historial de decisiones</button>
+            </div>
+          </section>
+          <button class="nav-item nav-direct" data-view="settings" data-permission="settings.view"><span class="nav-icon">⚙</span>Configuración</button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="system-health"><span class="status-dot"></span><div><strong>Sistema operativo</strong><small>SQLite local conectado</small></div></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button id="mobile-menu" class="mobile-menu" aria-label="Abrir menú">☰</button>
+          <div><span id="breadcrumbs" class="breadcrumbs">OPERACIÓN / DASHBOARDS</span><h1 id="page-title">Dashboards</h1></div>
+          <div class="top-actions">
+            <div class="profile-mini top-profile"><span id="profile-initials" class="avatar">AD</span><div><strong id="profile-name">Administrador</strong><small id="profile-role">Administrador</small></div><button id="logout-button" class="icon-button" title="Cerrar sesión" aria-label="Cerrar sesión">↪</button></div>
+            <span class="date-pill"><span id="current-date"></span><strong id="current-time"></strong></span>
+            <button class="notification-button" aria-label="Notificaciones">○<span id="notification-count">0</span></button>
+          </div>
+        </header>
+        <main id="page-content" class="page-content" tabindex="-1"></main>
+      </div>
+    </div>
+
+    <dialog id="password-dialog" class="modal" data-static>
+      <form id="password-form" class="modal-card compact">
+        <div class="modal-symbol">✦</div>
+        <span class="eyebrow">PRIMER ACCESO</span>
+        <h2>Protege tu cuenta</h2>
+        <p class="muted">Por seguridad, reemplaza la contraseña temporal antes de continuar.</p>
+        <label>Contraseña actual
+          <span class="password-field"><input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required /><button class="peek" type="button" data-peek="current-password" data-peek-label="contraseña actual" aria-label="Mostrar contraseña actual" aria-pressed="false">Ver</button></span>
+        </label>
+        <label>Nueva contraseña
+          <span class="password-field"><input id="new-password" name="newPassword" type="password" autocomplete="new-password" required /><button class="peek" type="button" data-peek="new-password" data-peek-label="nueva contraseña" aria-label="Mostrar nueva contraseña" aria-pressed="false">Ver</button></span>
+        </label>
+        <label>Confirmar contraseña
+          <span class="password-field"><input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" required /><button class="peek" type="button" data-peek="confirm-password" data-peek-label="confirmación de contraseña" aria-label="Mostrar confirmación de contraseña" aria-pressed="false">Ver</button></span>
+        </label>
+        <ul class="password-rules"><li>10 caracteres como mínimo</li><li>Mayúscula, minúscula y número</li><li>Al menos un símbolo</li></ul>
+        <p class="form-error hidden" role="alert"></p>
+        <button class="button primary wide" type="submit">Guardar y continuar</button>
+      </form>
+    </dialog>
+
+    <dialog id="entity-dialog" class="modal">
+      <div id="entity-modal-content" class="modal-card"></div>
+    </dialog>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="./app.js?v=20260730-32"></script>
+  </body>
+</html>

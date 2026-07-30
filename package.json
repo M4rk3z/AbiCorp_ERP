@@ -1,0 +1,17 @@
+{
+  "name": "abicorp-erp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Núcleo local y modular del ERP de Abicorp",
+  "scripts": {
+    "dev": "node --watch src/erp-server.js",
+    "start": "node src/erp-server.js",
+    "reset-admin": "node scripts/reset-admin.js",
+    "test": "node --test",
+    "check": "node --check src/erp-server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

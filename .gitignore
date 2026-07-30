@@ -1,0 +1,18 @@
+data/
+node_modules/
+.pnpm-store/
+.env
+coverage/
+*.log
+
+# Centro de Gestión externo (se conserva únicamente en este equipo)
+control/
+src/control-app.js
+src/control-server.js
+src/server.js
+scripts/reset-control-admin.js
+test/control.test.js
+
+# Archivos internos del entorno de desarrollo
+.agents/
+.codex/
