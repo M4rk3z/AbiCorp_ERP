@@ -1631,6 +1631,14 @@ export const migrations = [
         ), 0)`,
     ],
   },
+  {
+    version: 24,
+    name: "database_backed_files",
+    statements: [
+      "ALTER TABLE hr_employee_profiles ADD COLUMN photo_data BLOB",
+      "ALTER TABLE documents ADD COLUMN content_data BLOB",
+    ],
+  },
 ];
 
 export const baseRoles = [

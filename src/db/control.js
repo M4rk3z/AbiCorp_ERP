@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashPassword } from "../core/security.js";
+import { PostgresDatabaseSync, isPostgresProvider } from "./postgres-sync.js";
 
 export function openControlDatabase({
   dataDir,
@@ -10,12 +11,22 @@ export function openControlDatabase({
   legacyDatabasePath = null,
   seedControlAdmin = true,
   mustChangeControlPassword = false,
+  databaseProvider = null,
+  databaseUrl = null,
 } = {}) {
+  const usePostgres = isPostgresProvider({ databaseProvider });
   const root = resolve(dataDir ?? "./data");
   const dbPath = resolve(root, "abicorp-control.db");
-  mkdirSync(dirname(dbPath), { recursive: true });
-  mkdirSync(resolve(root, "companies"), { recursive: true });
-  const db = new DatabaseSync(dbPath);
+  if (!usePostgres) {
+    mkdirSync(dirname(dbPath), { recursive: true });
+    mkdirSync(resolve(root, "companies"), { recursive: true });
+  }
+  const db = usePostgres
+    ? new PostgresDatabaseSync({
+        connectionString: databaseUrl ?? process.env.DATABASE_URL,
+        schema: "control",
+      })
+    : new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA busy_timeout = 5000");
@@ -106,9 +117,19 @@ export function openControlDatabase({
       (code, slug, legal_name, trade_name, database_file)
       VALUES ('ABICORP', 'abicorp', 'ABICORP', 'ABICORP', ?)`)
       .run(relative(root, legacy).split(sep).join("/"));
-    return { db, dbPath, dataDir: root, initialCompanyId: Number(result.lastInsertRowid) };
+    return {
+      db,
+      dbPath: usePostgres ? "postgres:control" : dbPath,
+      dataDir: root,
+      initialCompanyId: Number(result.lastInsertRowid),
+    };
   }
-  return { db, dbPath, dataDir: root, initialCompanyId: Number(company.id) };
+  return {
+    db,
+    dbPath: usePostgres ? "postgres:control" : dbPath,
+    dataDir: root,
+    initialCompanyId: Number(company.id),
+  };
 }
 
 export function resolveCompanyDatabase(dataDir, databaseFile) {

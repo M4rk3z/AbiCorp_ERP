@@ -3,21 +3,37 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashPassword } from "../core/security.js";
 import { basePermissions, baseRoles, migrations } from "./schema.js";
+import { PostgresDatabaseSync, isPostgresProvider } from "./postgres-sync.js";
+import { postgresSchemaName } from "./postgres-sql.js";
 
-export function openDatabase({ dataDir, databasePath = null, initialAdminUser, initialAdminPassword, seedAdmin = true }) {
+export function openDatabase({
+  dataDir,
+  databasePath = null,
+  databaseProvider = null,
+  databaseUrl = null,
+  databaseSchema = null,
+  company = null,
+  initialAdminUser,
+  initialAdminPassword,
+  seedAdmin = true,
+}) {
+  const usePostgres = isPostgresProvider({ databaseProvider });
   const dbPath = databasePath ? resolve(databasePath) : resolve(dataDir, "abicorp-erp.db");
-  mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath);
+  const schema = postgresSchemaName(databaseSchema ?? company?.slug ?? "abicorp");
+  if (!usePostgres) mkdirSync(dirname(dbPath), { recursive: true });
+  const db = usePostgres
+    ? new PostgresDatabaseSync({ connectionString: databaseUrl ?? process.env.DATABASE_URL, schema })
+    : new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA synchronous = NORMAL");
-  applyMigrations(db);
+  applyMigrations(db, { usePostgres });
   seedCore(db, { initialAdminUser, initialAdminPassword, seedAdmin });
-  return { db, dbPath };
+  return { db, dbPath: usePostgres ? `postgres:${schema}` : dbPath };
 }
 
-function applyMigrations(db) {
+function applyMigrations(db, { usePostgres = false } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -29,7 +45,10 @@ function applyMigrations(db) {
     if (applied.get(migration.version)) continue;
     db.exec("BEGIN IMMEDIATE");
     try {
-      for (const statement of migration.statements) db.exec(statement);
+      for (const statement of migration.statements) {
+        if (usePostgres && /^\s*CREATE\s+TRIGGER\b/i.test(statement)) continue;
+        db.exec(statement);
+      }
       record.run(migration.version, migration.name);
       db.exec("COMMIT");
     } catch (error) {
@@ -37,6 +56,50 @@ function applyMigrations(db) {
       throw error;
     }
   }
+  if (usePostgres) installPostgresFinanceTriggers(db);
+}
+
+function installPostgresFinanceTriggers(db) {
+  db.exec(`
+    CREATE OR REPLACE FUNCTION abicorp_sync_invoice_receivable()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF NEW.document_type <> 'invoice' THEN
+        RETURN NEW;
+      END IF;
+      INSERT INTO finance_receivables
+        (folio, invoice_id, customer_id, currency_id, original_amount, paid_amount,
+         issue_date, due_date, status, notes)
+      VALUES
+        ('CXC-' || LPAD(NEW.id::text, 6, '0'), NEW.id, NEW.customer_id, NEW.currency_id,
+         NEW.total, CASE WHEN NEW.payment_status = 'paid' THEN NEW.total ELSE 0 END,
+         NEW.issue_date, NEW.due_date,
+         CASE WHEN NEW.status = 'cancelled' THEN 'cancelled'
+              WHEN NEW.payment_status = 'paid' THEN 'paid' ELSE 'pending' END,
+         'Generada automáticamente desde ' || NEW.folio)
+      ON CONFLICT(invoice_id) DO UPDATE SET
+        original_amount = EXCLUDED.original_amount,
+        paid_amount = CASE WHEN NEW.payment_status = 'paid'
+          THEN EXCLUDED.original_amount ELSE finance_receivables.paid_amount END,
+        due_date = EXCLUDED.due_date,
+        status = CASE
+          WHEN NEW.status = 'cancelled' THEN 'cancelled'
+          WHEN NEW.payment_status = 'paid' THEN 'paid'
+          WHEN finance_receivables.paid_amount > 0 THEN 'partial'
+          ELSE 'pending'
+        END,
+        updated_at = CURRENT_TIMESTAMP;
+      RETURN NEW;
+    END;
+    $$;
+    DROP TRIGGER IF EXISTS trg_finance_invoice_receivable ON sales_documents;
+    DROP TRIGGER IF EXISTS trg_finance_invoice_payment_status ON sales_documents;
+    CREATE TRIGGER trg_finance_invoice_receivable
+      AFTER UPDATE OF total, payment_status, status ON sales_documents
+      FOR EACH ROW EXECUTE FUNCTION abicorp_sync_invoice_receivable();
+  `);
 }
 
 function seedCore(db, { initialAdminUser, initialAdminPassword, seedAdmin }) {

@@ -1,4 +1,4 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { basename, dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -46,6 +46,8 @@ export function createApplication(options = {}) {
   const dataDir = resolve(options.dataDir ?? process.env.ERP_DATA_DIR ?? "./data");
   const registry = openControlDatabase({
     dataDir,
+    databaseProvider: options.databaseProvider ?? process.env.DATABASE_PROVIDER,
+    databaseUrl: options.databaseUrl ?? process.env.DATABASE_URL,
     controlUser: options.controlUser ?? process.env.ERP_CONTROL_USER ?? "admin",
     controlPassword: options.controlPassword ?? process.env.ERP_CONTROL_PASSWORD ?? "admin",
     legacyDatabasePath: resolve(dataDir, "abicorp-erp.db"),
@@ -69,6 +71,7 @@ export function createApplication(options = {}) {
         ...options,
         dataDir: dirname(databasePath),
         databasePath,
+        databaseSchema: company.slug,
         company: {
           id: company.id,
           code: company.code,
@@ -163,6 +166,9 @@ export function createTenantApplication(options = {}) {
   const config = {
     dataDir: resolve(options.dataDir ?? process.env.ERP_DATA_DIR ?? "./data"),
     databasePath: options.databasePath ? resolve(options.databasePath) : null,
+    databaseProvider: options.databaseProvider ?? process.env.DATABASE_PROVIDER,
+    databaseUrl: options.databaseUrl ?? process.env.DATABASE_URL,
+    databaseSchema: options.databaseSchema ?? options.company?.slug ?? null,
     initialAdminUser: options.initialAdminUser ?? process.env.ERP_INITIAL_ADMIN_USER ?? "admin",
     initialAdminPassword: options.initialAdminPassword ?? process.env.ERP_INITIAL_ADMIN_PASSWORD ?? "Cambiar123!",
     seedAdmin: options.seedAdmin ?? true,
@@ -1732,12 +1738,9 @@ export function createTenantApplication(options = {}) {
     const photo = parseEmployeePhoto(body);
     const result = hr.createPerson(db, body);
     if (photo) {
-      const photoDir = join(config.dataDir, "hr-photos");
-      await mkdir(photoDir, { recursive: true });
       const filename = `employee-${result.id}.${photo.extension}`;
-      await writeFile(join(photoDir, filename), photo.bytes);
-      db.prepare("UPDATE hr_employee_profiles SET photo_filename = ?, photo_mime = ?, photo_original_name = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?")
-        .run(filename, photo.mime, photo.originalName, result.id);
+      db.prepare("UPDATE hr_employee_profiles SET photo_filename = ?, photo_mime = ?, photo_original_name = ?, photo_data = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?")
+        .run(filename, photo.mime, photo.originalName, photo.bytes, result.id);
     }
     const auditBody = { ...body, photoBase64: body.photoBase64 ? "[imagen guardada]" : "" };
     moduleAudit(req, context, "hr", "hr.person_created", "Expediente de personal creado", result, auditBody, "employee");
@@ -1748,23 +1751,13 @@ export function createTenantApplication(options = {}) {
     requirePermission(context, "hr.manage");
     const body = await readJson(req);
     const photo = parseEmployeePhoto(body);
-    const previousPhoto = db.prepare("SELECT photo_filename FROM hr_employee_profiles WHERE employee_id = ?").get(id)?.photo_filename;
     const result = hr.updatePerson(db, id, body);
-    const photoDir = join(config.dataDir, "hr-photos");
     if (photo) {
-      await mkdir(photoDir, { recursive: true });
       const filename = `employee-${id}.${photo.extension}`;
-      await writeFile(join(photoDir, filename), photo.bytes);
-      db.prepare("UPDATE hr_employee_profiles SET photo_filename = ?, photo_mime = ?, photo_original_name = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?")
-        .run(filename, photo.mime, photo.originalName, id);
-      if (previousPhoto && previousPhoto !== filename) await unlink(join(photoDir, basename(previousPhoto))).catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-      });
+      db.prepare("UPDATE hr_employee_profiles SET photo_filename = ?, photo_mime = ?, photo_original_name = ?, photo_data = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?")
+        .run(filename, photo.mime, photo.originalName, photo.bytes, id);
     } else if (body.removePhoto === true) {
-      db.prepare("UPDATE hr_employee_profiles SET photo_filename = NULL, photo_mime = NULL, photo_original_name = NULL, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?").run(id);
-      if (previousPhoto) await unlink(join(photoDir, basename(previousPhoto))).catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-      });
+      db.prepare("UPDATE hr_employee_profiles SET photo_filename = NULL, photo_mime = NULL, photo_original_name = NULL, photo_data = NULL, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?").run(id);
     }
     const auditBody = { ...body, photoBase64: body.photoBase64 ? "[imagen actualizada]" : "" };
     moduleAudit(req, context, "hr", "hr.person_updated", "Expediente de personal actualizado", result, auditBody, "employee");
@@ -1829,15 +1822,17 @@ export function createTenantApplication(options = {}) {
 
   async function hrPersonPhoto(res, context, id) {
     requirePermission(context, "hr.view");
-    const profile = db.prepare("SELECT photo_filename, photo_mime FROM hr_employee_profiles WHERE employee_id = ?").get(id);
+    const profile = db.prepare("SELECT photo_filename, photo_mime, photo_data FROM hr_employee_profiles WHERE employee_id = ?").get(id);
     if (!profile?.photo_filename) throw new HttpError(404, "El trabajador no tiene fotografía.");
-    const filename = basename(profile.photo_filename);
-    let data;
-    try {
-      data = await readFile(join(config.dataDir, "hr-photos", filename));
-    } catch (error) {
-      if (error.code === "ENOENT") throw new HttpError(404, "La fotografía no está disponible.");
-      throw error;
+    let data = profile.photo_data;
+    if (!data) {
+      const filename = basename(profile.photo_filename);
+      try {
+        data = await readFile(join(config.dataDir, "hr-photos", filename));
+      } catch (error) {
+        if (error.code === "ENOENT") throw new HttpError(404, "La fotografía no está disponible.");
+        throw error;
+      }
     }
     res.writeHead(200, {
       "Content-Type": profile.photo_mime || "application/octet-stream",
@@ -2013,23 +2008,15 @@ export function createTenantApplication(options = {}) {
     if (bytes.length > MAX_FILE_BYTES) throw new HttpError(413, "El archivo supera el límite de 8 MB.");
     const extension = extname(originalName).replace(/[^.a-zA-Z0-9]/g, "").slice(0, 12).toLowerCase();
     const storedName = `${createOpaqueToken(18)}${extension}`;
-    const documentsDir = resolve(config.dataDir, "documents");
-    const storagePath = resolve(documentsDir, storedName);
-    await mkdir(documentsDir, { recursive: true });
-    await writeFile(storagePath, bytes, { flag: "wx" });
-    try {
-      const checksum = createHash("sha256").update(bytes).digest("hex");
-      const result = db.prepare(`INSERT INTO documents
-        (module, entity_type, entity_id, original_name, stored_name, mime_type, size_bytes, storage_path, checksum, description, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(module, entityType, entityId, originalName, storedName, mimeType, bytes.length, storagePath, checksum, description, context.user.id);
-      const id = Number(result.lastInsertRowid);
-      audit(db, { userId: context.user.id, action: "documents.uploaded", module: "documents", entityType: "document", entityId: id, summary: `Documento ${originalName} cargado`, details: { module, entityType, entityId, sizeBytes: bytes.length }, ip: requestIp(req) });
-      sendJson(res, 201, { id });
-    } catch (error) {
-      await unlink(storagePath).catch(() => {});
-      throw error;
-    }
+    const storagePath = `database:${storedName}`;
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const result = db.prepare(`INSERT INTO documents
+      (module, entity_type, entity_id, original_name, stored_name, mime_type, size_bytes, storage_path, checksum, description, uploaded_by, content_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(module, entityType, entityId, originalName, storedName, mimeType, bytes.length, storagePath, checksum, description, context.user.id, bytes);
+    const id = Number(result.lastInsertRowid);
+    audit(db, { userId: context.user.id, action: "documents.uploaded", module: "documents", entityType: "document", entityId: id, summary: `Documento ${originalName} cargado`, details: { module, entityType, entityId, sizeBytes: bytes.length }, ip: requestIp(req) });
+    sendJson(res, 201, { id });
   }
 
   async function downloadDocument(res, context, id) {
@@ -2037,7 +2024,7 @@ export function createTenantApplication(options = {}) {
     const document = db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
     if (!document) throw new HttpError(404, "Documento no encontrado.");
     try {
-      const data = await readFile(document.storage_path);
+      const data = document.content_data || await readFile(document.storage_path);
       res.writeHead(200, {
         "Content-Type": document.mime_type,
         "Content-Length": data.length,
@@ -2056,7 +2043,7 @@ export function createTenantApplication(options = {}) {
     const document = db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
     if (!document) throw new HttpError(404, "Documento no encontrado.");
     db.prepare("DELETE FROM documents WHERE id = ?").run(id);
-    await unlink(document.storage_path).catch(() => {});
+    if (!document.content_data) await unlink(document.storage_path).catch(() => {});
     audit(db, { userId: context.user.id, action: "documents.deleted", module: "documents", entityType: "document", entityId: id, summary: `Documento ${document.original_name} eliminado`, ip: requestIp(req) });
     sendJson(res, 200, { ok: true });
   }
