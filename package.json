@@ -12,6 +12,6 @@
     "check": "node --check src/erp-server.js"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.5 <25"
   }
 }

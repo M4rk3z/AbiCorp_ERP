@@ -37,9 +37,10 @@ const state = {
   clockTimer: null,
 };
 
-// Live Server únicamente sirve los archivos de la interfaz. En ese caso, las
-// operaciones y la base SQLite siguen atendidas por el servidor local del ERP.
-const API_BASE = location.port === "5050" ? "" : "http://127.0.0.1:5050";
+// En un host remoto, la interfaz y la API comparten el mismo origen. Live Server
+// conserva el puente al backend local que escucha en el puerto 5050.
+const isRemoteHost = !["", "localhost", "127.0.0.1"].includes(location.hostname);
+const API_BASE = location.port === "5050" || isRemoteHost ? "" : "http://127.0.0.1:5050";
 
 const catalogUi = {
   companies: { label: "Empresas", singular: "Empresa", description: "Razones sociales y entidades operativas.", fields: [
