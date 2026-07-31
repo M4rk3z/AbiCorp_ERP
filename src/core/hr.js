@@ -3,8 +3,16 @@ export class HrError extends Error {
 }
 
 export function options(db) {
+  syncVacationPlans(db);
   return {
-    employees: db.prepare("SELECT id, employee_number, full_name, area_id, status FROM employees ORDER BY full_name").all(),
+    employees: db.prepare(`SELECT e.id, e.employee_number, e.full_name, e.area_id, e.status,
+      p.employment_type, p.vacation_balance, p.vacation_debt,
+      p.vacation_balance - p.vacation_debt AS vacation_available,
+      p.vacation_cycle_year, vp.name AS vacation_plan_name, vp.annual_days AS vacation_plan_days
+      FROM employees e
+      LEFT JOIN hr_employee_profiles p ON p.employee_id = e.id
+      LEFT JOIN hr_vacation_plans vp ON vp.id = p.vacation_plan_id
+      ORDER BY e.full_name`).all(),
     areas: db.prepare("SELECT id, code, name FROM areas WHERE is_active = 1 ORDER BY name").all(),
     jobPositions: db.prepare("SELECT * FROM hr_job_positions WHERE is_active = 1 ORDER BY name").all(),
     workShifts: db.prepare("SELECT * FROM hr_work_shifts WHERE is_active = 1 ORDER BY name").all(),
@@ -16,6 +24,8 @@ export function control(db) {
   syncVacationPlans(db);
   const people = db.prepare(`SELECT e.*, a.name AS area_name, p.employment_type, p.shift, p.work_schedule,
     p.emergency_contact, p.emergency_phone, p.vacation_balance, p.notes AS profile_notes,
+    p.vacation_debt, p.vacation_balance - p.vacation_debt AS vacation_available,
+    p.vacation_cycle_year, p.vacation_renewed_at,
     p.photo_filename, p.photo_mime, p.photo_original_name, p.work_shift_id, p.vacation_plan_id,
     p.contract_end_date, p.organization_name, p.organization_details, p.organization_contact_name,
     p.organization_contact_phone, p.organization_contact_email, p.advisor_name, p.advisor_phone,
@@ -238,7 +248,7 @@ export function updateWorkShift(db, id, body) {
 export function createVacationPlan(db, body) {
   const name = requiredText(body.name, 120, "El nombre del plan");
   const annualDays = positiveNumber(body.annualDays, "Los días anuales");
-  const minServiceYears = integerBetween(body.minServiceYears || 0, 0, 100, "La antigüedad mínima");
+  const minServiceYears = integerBetween(body.minServiceYears || 1, 1, 100, "La antigüedad mínima");
   const maxServiceYears = body.maxServiceYears === "" || body.maxServiceYears == null
     ? null
     : integerBetween(body.maxServiceYears, minServiceYears, 100, "La antigüedad máxima");
@@ -260,7 +270,7 @@ export function updateVacationPlan(db, id, body) {
   if (!current) throw new HrError(404, "Plan de vacaciones no encontrado.");
   const name = requiredText(body.name, 120, "El nombre del plan");
   const annualDays = positiveNumber(body.annualDays, "Los días anuales");
-  const minServiceYears = integerBetween(body.minServiceYears || 0, 0, 100, "La antigüedad mínima");
+  const minServiceYears = integerBetween(body.minServiceYears || 1, 1, 100, "La antigüedad mínima");
   const maxServiceYears = body.maxServiceYears === "" || body.maxServiceYears == null
     ? null
     : integerBetween(body.maxServiceYears, minServiceYears, 100, "La antigüedad máxima");
@@ -276,16 +286,43 @@ export function updateVacationPlan(db, id, body) {
 }
 
 export function syncVacationPlans(db) {
-  const people = db.prepare(`SELECT e.id, e.hire_date, p.employment_type, p.vacation_plan_id, p.vacation_balance
+  const people = db.prepare(`SELECT e.id, e.hire_date, p.employment_type, p.vacation_plan_id,
+    p.vacation_balance, p.vacation_debt, p.vacation_cycle_year, p.vacation_renewed_at
     FROM employees e JOIN hr_employee_profiles p ON p.employee_id = e.id`).all();
   const update = db.prepare(`UPDATE hr_employee_profiles
-    SET vacation_plan_id = ?, vacation_balance = ?, updated_at = CURRENT_TIMESTAMP
+    SET vacation_plan_id = ?, vacation_balance = ?, vacation_debt = ?,
+      vacation_cycle_year = ?, vacation_renewed_at = ?,
+      updated_at = CURRENT_TIMESTAMP
     WHERE employee_id = ?`);
   for (const person of people) {
-    const plan = person.employment_type === "permanent" ? automaticVacationPlan(db, person.hire_date) : null;
+    if (person.employment_type !== "permanent") {
+      if (person.vacation_plan_id || person.vacation_balance || person.vacation_debt || person.vacation_cycle_year)
+        update.run(null, 0, 0, 0, null, person.id);
+      continue;
+    }
+    const years = serviceYears(person.hire_date);
+    const plan = automaticVacationPlan(db, person.hire_date);
+    const previousCycle = Number(person.vacation_cycle_year || 0);
+    let balance = Number(person.vacation_balance || 0);
+    let debt = Number(person.vacation_debt || 0);
+    let cycle = previousCycle;
+    let renewedAt = person.vacation_renewed_at || null;
+    if (!plan) {
+      balance = 0;
+      cycle = 0;
+    } else if (years > previousCycle) {
+      const renewedNet = Number(plan.annual_days || 0) - debt;
+      balance = Math.max(0, renewedNet);
+      debt = Math.max(0, -renewedNet);
+      cycle = years;
+      renewedAt = today();
+    }
     if (Number(person.vacation_plan_id || 0) !== Number(plan?.id || 0)
-      || Number(person.vacation_balance || 0) !== Number(plan?.annual_days || 0)) {
-      update.run(plan?.id || null, plan?.annual_days || 0, person.id);
+      || Number(person.vacation_balance || 0) !== balance
+      || Number(person.vacation_debt || 0) !== debt
+      || previousCycle !== cycle
+      || String(person.vacation_renewed_at || "") !== String(renewedAt || "")) {
+      update.run(plan?.id || null, balance, debt, cycle, renewedAt, person.id);
     }
   }
 }
@@ -466,6 +503,7 @@ function serviceYears(hireDate) {
 }
 function automaticVacationPlan(db, hireDate) {
   const years = serviceYears(hireDate);
+  if (years < 1) return null;
   return db.prepare(`SELECT * FROM hr_vacation_plans
     WHERE is_active = 1 AND min_service_years <= ?
       AND (max_service_years IS NULL OR max_service_years >= ?)
@@ -473,7 +511,7 @@ function automaticVacationPlan(db, hireDate) {
       CASE WHEN max_service_years IS NULL THEN 1 ELSE 0 END,
       id DESC
     LIMIT 1`).get(years, years)
-    || db.prepare("SELECT * FROM hr_vacation_plans WHERE is_active = 1 ORDER BY min_service_years, id DESC LIMIT 1").get();
+    || null;
 }
 function serviceDayCount(startDate, endDate) {
   if (!startDate || !endDate || endDate < startDate) return 0;
