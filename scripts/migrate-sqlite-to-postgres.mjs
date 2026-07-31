@@ -16,7 +16,10 @@ import { DatabaseSync } from "node:sqlite";
 import { Client, types } from "pg";
 import { openControlDatabase } from "../src/db/control.js";
 import { openDatabase } from "../src/db/index.js";
+import { migrations } from "../src/db/schema.js";
 import {
+  canonicalDatabaseValue,
+  postgresParameter,
   postgresSchemaName,
   quoteIdentifier,
 } from "../src/db/postgres-sql.js";
@@ -29,7 +32,7 @@ const confirmed = args.has("--confirm");
 const replaceExisting = args.has("--replace");
 const sourceArgument = argumentValue("--source") ?? "./data";
 const sourceDataDir = resolve(sourceArgument);
-const connectionString = process.env.DATABASE_URL;
+const configuredConnectionString = process.env.DATABASE_URL;
 const controlPath = join(sourceDataDir, "abicorp-control.db");
 
 if (!existsSync(controlPath)) {
@@ -45,14 +48,17 @@ if (!confirmed) {
   process.exit(0);
 }
 
-if (!connectionString) {
+if (!configuredConnectionString) {
   throw new Error("Falta DATABASE_URL con la External Database URL de Render.");
 }
+const connectionString = normalizeExternalDatabaseUrl(configuredConnectionString);
 
 await initializeTarget(plan, connectionString);
 const client = new Client({
   connectionString,
   application_name: "abicorp-sqlite-migration",
+  keepAlive: true,
+  connectionTimeoutMillis: 20_000,
 });
 await client.connect();
 
@@ -93,6 +99,11 @@ try {
       hydrateFiles: true,
     }));
   }
+  const logosStored = await hydrateLegacyCompanyLogos(
+    client,
+    plan.control.path,
+    plan.companies,
+  );
 
   const report = {
     source: basename(dirname(sourceDataDir)),
@@ -101,6 +112,7 @@ try {
     totalRows: reports.reduce((total, item) => total + item.totalRows, 0),
     photosStored: reports.reduce((total, item) => total + item.photosStored, 0),
     documentsStored: reports.reduce((total, item) => total + item.documentsStored, 0),
+    logosStored,
   };
   await client.query(
     "INSERT INTO control.postgres_migration_runs (source_label, report) VALUES ($1, $2::jsonb)",
@@ -241,19 +253,39 @@ async function copyDatabase({
 
     const tableReports = [];
     for (const table of order) {
-      const columns = tableColumns(source, table);
+      const sourceColumns = tableColumns(source, table);
+      const targetColumnRows = await client.query(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = $2`,
+        [schema, table],
+      );
+      const targetColumns = new Set(targetColumnRows.rows.map((row) => row.column_name));
+      const columns = sourceColumns.filter((column) => targetColumns.has(column.name));
+      const ignoredColumns = sourceColumns
+        .filter((column) => !targetColumns.has(column.name))
+        .map((column) => column.name);
+      if (!columns.length) {
+        throw new Error(`No hay columnas compatibles para ${schema}.${table}.`);
+      }
       const rows = source.prepare(selectSourceSql(table, columns)).all();
       if (rows.length) {
         const columnSql = columns.map((column) => quoteIdentifier(column.name)).join(", ");
         const placeholders = columns.map((_, index) => `$${index + 1}`).join(", ");
         const insertSql = `INSERT INTO ${quoteIdentifier(table)} (${columnSql}) VALUES (${placeholders})`;
         for (const row of rows) {
-          await client.query(insertSql, columns.map((column) => row[column.name]));
+          await client.query(
+            insertSql,
+            columns.map((column) => postgresParameter(row[column.name])),
+          );
         }
       }
       await resetSerialSequences(client, schema, table, columns);
-      tableReports.push(await verifyTable(client, source, table, columns));
+      tableReports.push({
+        ...await verifyTable(client, source, table, columns),
+        ignoredColumns,
+      });
     }
+    await synchronizeMigrationVersions(client, source, tables);
 
     let photosStored = 0;
     let documentsStored = 0;
@@ -277,6 +309,18 @@ async function copyDatabase({
   }
 }
 
+async function synchronizeMigrationVersions(client, source, tables) {
+  if (!tables.includes("schema_migrations")) return;
+  for (const migration of migrations) {
+    await client.query(
+      `INSERT INTO schema_migrations (version, name)
+       VALUES ($1, $2)
+       ON CONFLICT(version) DO UPDATE SET name = EXCLUDED.name`,
+      [migration.version, migration.name],
+    );
+  }
+}
+
 async function verifyTable(client, source, table, columns) {
   const sourceRows = source.prepare(selectSourceSql(table, columns)).all();
   const target = await client.query(
@@ -286,7 +330,12 @@ async function verifyTable(client, source, table, columns) {
   const sourceCanonical = canonicalRows(sourceRows, columns);
   const targetCanonical = canonicalRows(target.rows, columns);
   if (sourceCanonical !== targetCanonical) {
-    throw new Error(`La verificación de datos falló en ${table}.`);
+    const sourceHash = createHash("sha256").update(sourceCanonical).digest("hex");
+    const targetHash = createHash("sha256").update(targetCanonical).digest("hex");
+    throw new Error(
+      `La verificación de datos falló en ${table}: ` +
+      `origen=${sourceRows.length}/${sourceHash}, destino=${target.rows.length}/${targetHash}.`,
+    );
   }
   return {
     table,
@@ -366,6 +415,38 @@ async function hydrateDocuments(client, source, sourcePath, dataDirectory) {
   return stored;
 }
 
+async function hydrateLegacyCompanyLogos(client, controlDatabasePath, companies) {
+  const source = new DatabaseSync(controlDatabasePath, { readOnly: true });
+  try {
+    const columns = new Set(tableColumns(source, "companies").map((item) => item.name));
+    if (!columns.has("logo_data") || !columns.has("logo_mime")) return 0;
+    const rows = source.prepare(
+      "SELECT id, logo_data, logo_mime FROM companies WHERE logo_data IS NOT NULL",
+    ).all();
+    let stored = 0;
+    for (const row of rows) {
+      const company = companies.find((item) => Number(item.id) === Number(row.id));
+      if (!company || !row.logo_data) continue;
+      await client.query(
+        `SET LOCAL search_path TO ${quoteIdentifier(company.schema)}, public`,
+      );
+      await client.query(
+        `INSERT INTO company_assets (asset_key, asset_data, mime_type, updated_at)
+         VALUES ('company_logo', $1, $2, CURRENT_TIMESTAMP::text)
+         ON CONFLICT(asset_key) DO UPDATE SET
+           asset_data = EXCLUDED.asset_data,
+           mime_type = EXCLUDED.mime_type,
+           updated_at = CURRENT_TIMESTAMP::text`,
+        [Buffer.from(row.logo_data), row.logo_mime || "image/png"],
+      );
+      stored += 1;
+    }
+    return stored;
+  } finally {
+    source.close();
+  }
+}
+
 function tableNames(database) {
   return database.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -413,14 +494,8 @@ function selectSourceSql(table, columns) {
 
 function canonicalRows(rows, columns) {
   return rows.map((row) => JSON.stringify(
-    columns.map((column) => canonicalValue(row[column.name])),
+    columns.map((column) => canonicalDatabaseValue(row[column.name])),
   )).sort().join("\n");
-}
-
-function canonicalValue(value) {
-  if (Buffer.isBuffer(value)) return { buffer: value.toString("base64") };
-  if (typeof value === "bigint") return Number(value);
-  return value;
 }
 
 function assertIntegrity(database, path) {
@@ -441,4 +516,20 @@ function resolveCompanyPath(dataDirectory, databaseFile) {
 function argumentValue(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : null;
+}
+
+function normalizeExternalDatabaseUrl(value) {
+  const url = new URL(String(value));
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+    throw new Error("DATABASE_URL no es una conexión PostgreSQL válida.");
+  }
+  if (!url.hostname.includes(".")) {
+    throw new Error(
+      "La URL parece ser Internal Database URL. Desde Windows debes copiar External Database URL.",
+    );
+  }
+  if (!url.searchParams.has("sslmode")) url.searchParams.set("sslmode", "require");
+  if (!url.searchParams.has("uselibpqcompat")) url.searchParams.set("uselibpqcompat", "true");
+  if (!url.searchParams.has("connect_timeout")) url.searchParams.set("connect_timeout", "20");
+  return url.toString();
 }

@@ -1,10 +1,12 @@
 import { Worker } from "node:worker_threads";
 import { postgresSchemaName } from "./postgres-sql.js";
 
-const LARGE_RESPONSE_BYTES = 16 * 1024 * 1024;
-const SMALL_RESPONSE_BYTES = 256 * 1024;
+export const POSTGRES_INITIAL_RESPONSE_BYTES = 256 * 1024;
+export const POSTGRES_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const RESPONSE_TOO_LARGE_CODE = "ABICORP_RESPONSE_TOO_LARGE";
 const HEADER_BYTES = 8;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const decoder = new TextDecoder();
 
 export class PostgresDatabaseSync {
   constructor({
@@ -16,7 +18,7 @@ export class PostgresDatabaseSync {
     this.schema = postgresSchemaName(schema, "");
     this.timeoutMs = timeoutMs;
     this.closed = false;
-    const initBuffer = new SharedArrayBuffer(256 * 1024);
+    const initBuffer = new SharedArrayBuffer(POSTGRES_INITIAL_RESPONSE_BYTES);
     this.worker = new Worker(new URL("./postgres-worker.js", import.meta.url), {
       workerData: {
         connectionString,
@@ -78,11 +80,18 @@ export class PostgresDatabaseSync {
 
   #request(type, payload = {}) {
     if (this.closed) throw new Error("La conexión PostgreSQL está cerrada.");
-    const buffer = new SharedArrayBuffer(
-      ["all", "get"].includes(type) ? LARGE_RESPONSE_BYTES : SMALL_RESPONSE_BYTES,
-    );
-    this.worker.postMessage({ type, payload, buffer });
-    return this.#wait(buffer, type);
+    const adaptive = ["all", "get"].includes(type);
+    let bufferBytes = POSTGRES_INITIAL_RESPONSE_BYTES;
+    while (true) {
+      const buffer = new SharedArrayBuffer(bufferBytes);
+      this.worker.postMessage({ type, payload, buffer });
+      try {
+        return this.#wait(buffer, type);
+      } catch (error) {
+        if (!adaptive || error?.code !== RESPONSE_TOO_LARGE_CODE) throw error;
+        bufferBytes = postgresResponseBufferBytes(error.requiredBytes, bufferBytes);
+      }
+    }
   }
 
   #wait(buffer, operation) {
@@ -93,7 +102,7 @@ export class PostgresDatabaseSync {
     }
     const length = Atomics.load(header, 1);
     const bytes = new Uint8Array(buffer, HEADER_BYTES, length);
-    const response = JSON.parse(new TextDecoder().decode(bytes), jsonReviver);
+    const response = JSON.parse(decoder.decode(bytes), jsonReviver);
     if (!response.ok) {
       const error = new Error(response.error?.message ?? "Falló la operación PostgreSQL.");
       Object.assign(error, response.error);
@@ -101,6 +110,27 @@ export class PostgresDatabaseSync {
     }
     return response.value;
   }
+}
+
+export function postgresResponseBufferBytes(
+  requiredPayloadBytes,
+  currentBytes = POSTGRES_INITIAL_RESPONSE_BYTES,
+) {
+  const required = Number(requiredPayloadBytes) + HEADER_BYTES;
+  if (!Number.isSafeInteger(required) || required <= HEADER_BYTES) {
+    throw new RangeError("PostgreSQL reported an invalid response size.");
+  }
+  if (required > POSTGRES_MAX_RESPONSE_BYTES) {
+    throw new RangeError(
+      `PostgreSQL response requires ${requiredPayloadBytes} bytes and exceeds the ${POSTGRES_MAX_RESPONSE_BYTES - HEADER_BYTES} byte limit.`,
+    );
+  }
+  let nextBytes = Math.max(
+    POSTGRES_INITIAL_RESPONSE_BYTES,
+    Number(currentBytes) * 2,
+  );
+  while (nextBytes < required) nextBytes *= 2;
+  return Math.min(nextBytes, POSTGRES_MAX_RESPONSE_BYTES);
 }
 
 export function isPostgresProvider(options = {}) {

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canonicalDatabaseValue,
+  postgresParameter,
   postgresSchemaName,
   translatePostgresSql,
 } from "../src/db/postgres-sql.js";
+import {
+  POSTGRES_INITIAL_RESPONSE_BYTES,
+  POSTGRES_MAX_RESPONSE_BYTES,
+  postgresResponseBufferBytes,
+} from "../src/db/postgres-sync.js";
 import { migrations } from "../src/db/schema.js";
 
 test("traduce parámetros y conserva signos dentro de textos", () => {
@@ -53,6 +60,16 @@ test("normaliza esquemas multiempresa", () => {
   assert.equal(postgresSchemaName("control", ""), "control");
 });
 
+test("normaliza binarios de SQLite y PostgreSQL al mismo valor", () => {
+  const sqliteValue = new Uint8Array([0, 1, 127, 255]);
+  const postgresValue = Buffer.from([0, 1, 127, 255]);
+  assert.ok(Buffer.isBuffer(postgresParameter(sqliteValue)));
+  assert.deepEqual(
+    canonicalDatabaseValue(sqliteValue),
+    canonicalDatabaseValue(postgresValue),
+  );
+});
+
 test("todas las migraciones tienen traducción PostgreSQL", () => {
   for (const migration of migrations) {
     for (const statement of migration.statements) {
@@ -65,4 +82,17 @@ test("todas las migraciones tienen traducción PostgreSQL", () => {
       );
     }
   }
+});
+
+test("dimensiona progresivamente las respuestas PostgreSQL", () => {
+  assert.equal(POSTGRES_INITIAL_RESPONSE_BYTES, 256 * 1024);
+  assert.equal(postgresResponseBufferBytes(400 * 1024), 512 * 1024);
+  assert.equal(
+    postgresResponseBufferBytes(600 * 1024, 512 * 1024),
+    1024 * 1024,
+  );
+  assert.throws(
+    () => postgresResponseBufferBytes(POSTGRES_MAX_RESPONSE_BYTES),
+    /exceeds the/,
+  );
 });

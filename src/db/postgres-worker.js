@@ -3,6 +3,8 @@ import { Client, types } from "pg";
 import { quoteIdentifier, translatePostgresSql } from "./postgres-sql.js";
 
 const HEADER_BYTES = 8;
+const RESPONSE_TOO_LARGE_CODE = "ABICORP_RESPONSE_TOO_LARGE";
+const encoder = new TextEncoder();
 const initBuffer = workerData.initBuffer;
 const connectionString = workerData.connectionString;
 const schema = workerData.schema;
@@ -20,11 +22,7 @@ initialize().catch((error) => {
 });
 
 async function initialize() {
-  client = new Client({
-    connectionString,
-    application_name: `abicorp-${schema}`,
-  });
-  await client.connect();
+  client = await connectWithRetry();
   await client.query("CREATE EXTENSION IF NOT EXISTS citext");
   await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schema)}`);
   await client.query(`SET search_path TO ${quoteIdentifier(schema)}, public`);
@@ -35,6 +33,30 @@ async function initialize() {
       respond(message.buffer, { ok: false, error: serializeError(error) });
     });
   });
+}
+
+async function connectWithRetry() {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const candidate = new Client({
+      connectionString,
+      application_name: `abicorp-${schema}`,
+      keepAlive: true,
+      connectionTimeoutMillis: 20_000,
+    });
+    try {
+      await candidate.connect();
+      return candidate;
+    } catch (error) {
+      lastError = error;
+      await candidate.end().catch(() => {});
+      if (!["ECONNRESET", "ETIMEDOUT", "EPIPE"].includes(error?.code) || attempt === 3) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+    }
+  }
+  throw lastError;
 }
 
 async function handle(message) {
@@ -134,12 +156,15 @@ function serializeError(error) {
 function respond(buffer, value) {
   const header = new Int32Array(buffer, 0, 2);
   const target = new Uint8Array(buffer, HEADER_BYTES);
-  let bytes = new TextEncoder().encode(JSON.stringify(value, jsonReplacer));
+  let bytes = encoder.encode(JSON.stringify(value, jsonReplacer));
   if (bytes.length > target.length) {
-    bytes = new TextEncoder().encode(JSON.stringify({
+    const requiredBytes = bytes.length;
+    bytes = encoder.encode(JSON.stringify({
       ok: false,
       error: {
         name: "RangeError",
+        code: RESPONSE_TOO_LARGE_CODE,
+        requiredBytes,
         message: `La respuesta PostgreSQL supera el límite de ${target.length} bytes.`,
       },
     }));

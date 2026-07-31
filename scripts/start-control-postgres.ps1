@@ -1,29 +1,12 @@
 param(
-  [string]$Source,
-  [switch]$Confirm,
-  [switch]$Replace
+  [int]$Port = 5051
 )
 
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 $OutputEncoding = [Console]::OutputEncoding
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-
-if (-not $Source) {
-  $latestBackup = Get-ChildItem -LiteralPath (Join-Path $projectRoot "backups") -Directory -Filter "sqlite-pre-postgres-*" -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-  if (-not $latestBackup) {
-    throw "No se encontró un respaldo SQLite en la carpeta backups."
-  }
-  $Source = Join-Path $latestBackup.FullName "data"
-}
-
-$sourcePath = [System.IO.Path]::GetFullPath($Source)
-if (-not (Test-Path -LiteralPath (Join-Path $sourcePath "abicorp-control.db"))) {
-  throw "La carpeta seleccionada no contiene abicorp-control.db: $sourcePath"
-}
-
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+
 if ($nodeCommand) {
   $nodeExecutable = $nodeCommand.Source
 } else {
@@ -34,28 +17,20 @@ if ($nodeCommand) {
     $nodeExecutable = Join-Path $projectOwnerPath ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
   }
 }
+
 if (-not (Test-Path -LiteralPath $nodeExecutable)) {
   throw "No se encontró node.exe."
 }
 
-$migrationScript = Join-Path $projectRoot "scripts\migrate-sqlite-to-postgres.mjs"
-$migrationArguments = @($migrationScript, "--source", $sourcePath)
-
-if (-not $Confirm) {
-  & $nodeExecutable @migrationArguments
-  exit $LASTEXITCODE
-}
-
-Write-Host ""
-Write-Host "Se copiará el respaldo a PostgreSQL y se reemplazarán las tablas de destino."
-$confirmation = Read-Host "Escribe MIGRAR para continuar"
-if ($confirmation -cne "MIGRAR") {
-  Write-Host "Migración cancelada."
-  exit 1
+$controlServer = Join-Path $projectRoot "src\control-server.js"
+if (-not (Test-Path -LiteralPath $controlServer)) {
+  throw "No se encontró el servidor local del Centro de Gestión."
 }
 
 $previousDatabaseUrl = [Environment]::GetEnvironmentVariable("DATABASE_URL", "Process")
 $previousProvider = [Environment]::GetEnvironmentVariable("DATABASE_PROVIDER", "Process")
+$previousPort = [Environment]::GetEnvironmentVariable("ERP_CONTROL_PORT", "Process")
+$previousHost = [Environment]::GetEnvironmentVariable("ERP_CONTROL_HOST", "Process")
 $secureUrl = $null
 $plainUrl = $previousDatabaseUrl
 $bstr = [IntPtr]::Zero
@@ -84,20 +59,17 @@ try {
 
   [Environment]::SetEnvironmentVariable("DATABASE_URL", $plainUrl, "Process")
   [Environment]::SetEnvironmentVariable("DATABASE_PROVIDER", "postgres", "Process")
-  $migrationArguments += "--confirm"
-  if ($Replace) {
-    $migrationArguments += "--replace"
-  }
-  $diagnosticPath = Join-Path $projectRoot "postgres-migration-last.log"
-  Set-Content -LiteralPath $diagnosticPath -Value "Diagnóstico de migración PostgreSQL" -Encoding utf8
-  & $nodeExecutable @migrationArguments 2>&1 | ForEach-Object {
-    $line = $_.ToString()
-    Write-Host $line
-    Add-Content -LiteralPath $diagnosticPath -Value $line -Encoding utf8
-  }
-  $migrationExitCode = $LASTEXITCODE
-  if ($migrationExitCode -ne 0) {
-    throw "La migración terminó con código $migrationExitCode. Diagnóstico: $diagnosticPath"
+  [Environment]::SetEnvironmentVariable("ERP_CONTROL_PORT", [string]$Port, "Process")
+  [Environment]::SetEnvironmentVariable("ERP_CONTROL_HOST", "127.0.0.1", "Process")
+
+  Write-Host ""
+  Write-Host "Centro de Gestión conectado a PostgreSQL."
+  Write-Host "Cuando aparezca 'disponible', abre http://127.0.0.1:$Port"
+  Write-Host "Mantén esta ventana abierta. Usa Ctrl+C para detenerlo."
+  Write-Host ""
+  & $nodeExecutable $controlServer
+  if ($LASTEXITCODE -ne 0) {
+    throw "El Centro de Gestión terminó con código $LASTEXITCODE."
   }
 } finally {
   if ($bstr -ne [IntPtr]::Zero) {
@@ -105,5 +77,7 @@ try {
   }
   [Environment]::SetEnvironmentVariable("DATABASE_URL", $previousDatabaseUrl, "Process")
   [Environment]::SetEnvironmentVariable("DATABASE_PROVIDER", $previousProvider, "Process")
+  [Environment]::SetEnvironmentVariable("ERP_CONTROL_PORT", $previousPort, "Process")
+  [Environment]::SetEnvironmentVariable("ERP_CONTROL_HOST", $previousHost, "Process")
   $plainUrl = $null
 }
