@@ -284,7 +284,7 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(savedSplitShift.work_days, "mon,tue,wed,thu,fri,sat");
   const vacationPlan = await request("/api/hr/vacation-plans", {
     method: "POST",
-    body: { name: "Plan de prueba", annualDays: 12, minServiceYears: 0, maxServiceYears: 1, description: "Plan inicial" },
+    body: { name: "Plan de prueba", annualDays: 12, minServiceYears: 1, maxServiceYears: 1, description: "Plan inicial" },
   });
   assert.equal(vacationPlan.response.status, 201);
   assert.match(vacationPlan.data.folio, /^PLV-\d{5}$/);
@@ -297,7 +297,7 @@ test("flujo principal del núcleo ERP", async (t) => {
       phone: "8100000001",
       areaId: area.data.area.id,
       positionId: jobPosition.data.id,
-      hireDate: "2026-07-15",
+      hireDate: new Date().toISOString().slice(0, 10),
       employmentType: "permanent",
       workShiftId: workShift.data.id,
       emergencyContact: "Contacto SST",
@@ -309,6 +309,10 @@ test("flujo principal del núcleo ERP", async (t) => {
   });
   assert.equal(hrPerson.response.status, 201);
   assert.match(hrPerson.data.folio, /^E-\d{5}$/);
+  const recentPermanentControl = await request("/api/hr/control");
+  const recentPermanent = recentPermanentControl.data.people.find((row) => row.id === hrPerson.data.id);
+  assert.equal(recentPermanent.vacation_balance, 0);
+  assert.equal(recentPermanent.vacation_plan_id, null);
   const employeePhoto = await fetch(`${baseUrl}/api/hr/people/${hrPerson.data.id}/photo`, { headers: { Cookie: cookie } });
   assert.equal(employeePhoto.status, 200);
   assert.equal(employeePhoto.headers.get("content-type"), "image/png");
@@ -440,7 +444,7 @@ test("flujo principal del núcleo ERP", async (t) => {
     body: {
       name: "Plan base actualizado",
       annualDays: 14,
-      minServiceYears: 0,
+      minServiceYears: 1,
       maxServiceYears: 1,
       description: "Plan actualizado desde el catálogo",
     },

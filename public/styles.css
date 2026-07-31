@@ -3175,6 +3175,102 @@ td small { color: #8a948e; }
   font-size: .53rem;
   line-height: 1.45;
 }
+.hr-selected-employee {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin: 18px 0;
+  border: 1px solid #bfd2c6;
+  border-left: 4px solid var(--lime);
+  padding: 12px 14px;
+  background: linear-gradient(90deg, #edf5f0, #f9fbf9);
+}
+.hr-selected-employee small,
+.hr-selected-employee strong { display: block; }
+.hr-selected-employee small {
+  color: #5d7769;
+  font-size: .48rem;
+  font-weight: 900;
+  letter-spacing: .1em;
+}
+.hr-selected-employee strong {
+  margin-top: 3px;
+  color: var(--forest);
+  font-size: .78rem;
+}
+.hr-selected-employee > span {
+  color: var(--forest);
+  font: 800 .64rem ui-monospace, Consolas, monospace;
+  letter-spacing: .06em;
+}
+.hr-hours-field { position: relative; }
+.hr-certificate-field { grid-column: 1 / -1; }
+.hr-hours-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.hr-hours-help-button {
+  display: inline-grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: #176bb0;
+  color: white;
+  font: 900 .66rem/1 Arial, sans-serif;
+  box-shadow: 0 2px 6px rgba(23,107,176,.25);
+}
+.hr-hours-help-button:hover,
+.hr-hours-help-button[aria-expanded="true"] {
+  background: #0f568f;
+  transform: translateY(-1px);
+}
+.hr-hours-help-popover {
+  position: absolute;
+  z-index: 30;
+  top: 25px;
+  right: 0;
+  width: min(300px, calc(100vw - 64px));
+  border: 1px solid #a8c8df;
+  border-top: 3px solid #176bb0;
+  border-radius: 4px;
+  padding: 13px 14px;
+  background: white;
+  box-shadow: 0 14px 30px rgba(16,61,96,.18);
+  color: var(--ink);
+}
+.hr-hours-help-popover::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  width: 11px;
+  height: 11px;
+  border-top: 1px solid #a8c8df;
+  border-left: 1px solid #a8c8df;
+  background: white;
+  transform: rotate(45deg);
+}
+.hr-hours-help-popover strong,
+.hr-hours-help-popover small { display: block; }
+.hr-hours-help-popover strong {
+  color: #0f568f;
+  font-size: .67rem;
+}
+.hr-hours-help-popover small {
+  margin-top: 6px;
+  color: #53645b;
+  font-size: .58rem;
+  font-weight: 500;
+  line-height: 1.55;
+}
 .hr-catalog-confirmation {
   display: flex;
   align-items: center;

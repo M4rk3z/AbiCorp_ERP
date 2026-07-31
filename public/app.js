@@ -3720,7 +3720,9 @@ function hrUnifiedDashboard(control) {
     const shiftDetail = row.employment_type === "contractor" ? (row.organization_name || "Contratista externo") : hrShiftSchedule(row);
     let trackingLabel = "VACACIONES";
     let trackingTitle = row.employment_type === "permanent" ? inventoryNumber(row.vacation_balance || 0) + " días" : "No aplica";
-    let trackingDetail = row.employment_type === "permanent" ? (row.vacation_plan_name || "Sin plan asignado") : hrEmployment(row.employment_type);
+    let trackingDetail = row.employment_type === "permanent"
+      ? (row.vacation_plan_name || (hrServiceYears(row.hire_date) < 1 ? "Disponible al cumplir 1 año" : "Sin plan asignado"))
+      : hrEmployment(row.employment_type);
     if (row.employment_type === "contractor") {
       trackingLabel = "DÍAS CONTRATADOS";
       trackingTitle = inventoryNumber(row.service_total_days || 0) + " días";
@@ -3867,7 +3869,9 @@ function bindHrEmploymentRules(form, vacationPlans, workShifts) {
     if (type === "permanent") {
       const years = hrServiceYears(hireDateInput.value);
       const plan = hrAutomaticVacationPlan(vacationPlans, hireDateInput.value);
-      vacationSummary.textContent = plan ? plan.name + " · " + inventoryNumber(plan.annual_days) + " días" : "Sin plan disponible";
+      vacationSummary.textContent = plan
+        ? plan.name + " · " + inventoryNumber(plan.annual_days) + " días"
+        : "0 días · Disponible al cumplir 1 año";
       senioritySummary.textContent = years + (years === 1 ? " año" : " años");
     } else {
       vacationSummary.textContent = "No aplica · Sin vacaciones";
@@ -4022,7 +4026,7 @@ function openHrCatalogsModal(section = "positions", confirmation = "", editingId
     rows = vacationPlans.map((row) => hrCatalogRecord(row, "vacations",
       inventoryNumber(row.annual_days) + " días · " + hrVacationSeniority(row),
       hrCatalogUsage("vacation_plan_id", row.id))).join("");
-    form = '<form id="hr-vacation-plan-form" class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR PLAN" : "NUEVO PLAN") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar plan de vacaciones") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><label>Nombre del plan<input name="name" maxlength="120" required placeholder="Ej. Plan 5 años" value="' + escapeAttribute(editing?.name || "") + '" /></label><div class="form-grid compact"><label>Días anuales<input name="annualDays" type="number" min="0.5" step="0.5" required value="' + escapeAttribute(editing?.annual_days || "") + '" /></label><label>Desde (años)<input name="minServiceYears" type="number" min="0" max="100" required value="' + escapeAttribute(editing?.min_service_years ?? 0) + '" /></label><label>Hasta (años)<input name="maxServiceYears" type="number" min="0" max="100" placeholder="Sin límite" value="' + escapeAttribute(editing?.max_service_years ?? "") + '" /></label></div><label>Descripción<textarea name="description" rows="3" maxlength="500">' + escapeHtml(editing?.description || "") + '</textarea></label><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Agregar plan") + '</button></form>';
+    form = '<form id="hr-vacation-plan-form" class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR PLAN" : "NUEVO PLAN") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar plan de vacaciones") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><label>Nombre del plan<input name="name" maxlength="120" required placeholder="Ej. Plan 5 años" value="' + escapeAttribute(editing?.name || "") + '" /></label><div class="form-grid compact"><label>Días anuales<input name="annualDays" type="number" min="0.5" step="0.5" required value="' + escapeAttribute(editing?.annual_days || "") + '" /></label><label>Desde (años)<input name="minServiceYears" type="number" min="1" max="100" required value="' + escapeAttribute(editing?.min_service_years ?? 1) + '" /></label><label>Hasta (años)<input name="maxServiceYears" type="number" min="1" max="100" placeholder="Sin límite" value="' + escapeAttribute(editing?.max_service_years ?? "") + '" /></label></div><label>Descripción<textarea name="description" rows="3" maxlength="500">' + escapeHtml(editing?.description || "") + '</textarea></label><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Agregar plan") + '</button></form>';
   } else {
     rows = workShifts.map((row) => hrCatalogRecord(row, "shifts", hrShiftCatalogSummary(row),
       hrCatalogUsage("work_shift_id", row.id))).join("");
@@ -4195,7 +4199,6 @@ function openHrModal(type, employeeId = null) {
   const positionRecords = Array.isArray(o.jobPositions) ? o.jobPositions : [];
   const shiftRecords = Array.isArray(o.workShifts) ? o.workShifts : [];
   const vacationRecords = Array.isArray(o.vacationPlans) ? o.vacationPlans : [];
-  const employees = '<option value="">Selecciona una persona</option>' + employeeRecords.filter((r) => r.status !== "inactive").map((r) => '<option value="' + r.id + '" ' + (r.id === employeeId ? "selected" : "") + '>' + escapeHtml(r.employee_number + " · " + r.full_name) + '</option>').join("");
   const areas = '<option value="">Sin área</option>' + areaRecords.map((r) => '<option value="' + r.id + '">' + escapeHtml(r.code + " · " + r.name) + '</option>').join("");
   const positions = '<option value="">Sin puesto asignado</option>' + positionRecords.map((r) => '<option value="' + r.id + '">' + escapeHtml(r.name) + '</option>').join("");
   const shifts = '<option value="">Sin turno asignado</option>' + shiftRecords.map((r) => '<option value="' + r.id + '">' + escapeHtml(r.name) + '</option>').join("");
@@ -4243,8 +4246,53 @@ function openHrModal(type, employeeId = null) {
     entityDialog.showModal(); return;
   }
   const leaveType = type;
+  const selectedEmployee = employeeRecords.find((row) => Number(row.id) === Number(employeeId))
+    || state.hrControl?.people?.find((row) => Number(row.id) === Number(employeeId));
+  if (!selectedEmployee || selectedEmployee.status === "inactive") {
+    toast("Selecciona la solicitud desde la fila de un colaborador activo.", "error");
+    return;
+  }
   const title = { permission: "Nuevo permiso", vacation: "Nuevas vacaciones", incapacity: "Nueva incapacidad" }[leaveType];
-  $("#entity-modal-content").innerHTML = '<form id="hr-form"><div class="modal-head"><div><span class="eyebrow">SOLICITUD DE PERSONAL</span><h2>' + title + '</h2><p class="muted">El folio y los días se calculan automáticamente.</p></div><button type="button" data-close-modal>×</button></div>' + automaticCodeBanner("AUTOMÁTICO", true) + '<input type="hidden" name="leaveType" value="' + leaveType + '" /><div class="form-grid"><label>Personal<select name="employeeId" required>' + employees + '</select></label><label>Subtipo<input name="subtype" placeholder="' + (leaveType === "permission" ? "Personal, comisión…" : leaveType === "vacation" ? "Periodo ordinario" : "Enfermedad general") + '" /></label><label>Inicio<input name="startDate" type="date" required /></label><label>Fin<input name="endDate" type="date" required /></label><label>Horas (si aplica)<input name="totalHours" type="number" min="0" step="0.5" value="0" /></label>' + (leaveType === "incapacity" ? '<label>Certificado<input name="certificateNumber" /></label><label>Institución médica<input name="medicalProvider" /></label>' : "") + '</div><label>Motivo<textarea name="reason" rows="3" required></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Enviar solicitud</button></div></form>';
+  const leaveSubtypeOptions = {
+    permission: ["Asunto personal", "Cita médica", "Comisión laboral", "Trámite oficial", "Evento familiar", "Permiso con goce", "Permiso sin goce", "Otro"],
+    vacation: ["Periodo ordinario", "Día de vacaciones", "Vacaciones anticipadas", "Vacaciones pendientes", "Otro"],
+    incapacity: ["Enfermedad general", "Riesgo de trabajo", "Accidente de trabajo", "Accidente en trayecto", "Enfermedad de trabajo", "Maternidad", "Otro"],
+  }[leaveType] || [];
+  const subtypeOptions = '<option value="">Selecciona un subtipo</option>'
+    + leaveSubtypeOptions.map((option) => '<option value="' + escapeAttribute(option) + '">' + escapeHtml(option) + '</option>').join("");
+  const hoursHelpText = {
+    permission: "Captura horas únicamente cuando el permiso cubra una parte de la jornada, por ejemplo 2.5 horas. Si corresponde a días completos, conserva el valor en 0.",
+    vacation: "Las vacaciones se calculan automáticamente por los días indicados entre Inicio y Fin. En este tipo de solicitud conserva el valor en 0.",
+    incapacity: "La incapacidad se calcula por fechas. Captura horas solamente si el documento médico especifica una ausencia parcial; de lo contrario conserva el valor en 0.",
+  }[leaveType];
+  const certificateField = leaveType === "incapacity"
+    ? '<label class="hr-hours-field hr-certificate-field"><span class="hr-hours-label">Certificado<button class="hr-hours-help-button" type="button" data-hr-field-help data-hr-certificate-help aria-label="Explicar qué certificado capturar" aria-expanded="false">?</button></span><input name="certificateNumber" maxlength="120" /><span class="hr-hours-help-popover" data-hr-field-popover role="note" hidden><strong>¿Qué debo capturar?</strong><small>Ingresa el número o folio del certificado de incapacidad que aparece en el documento médico. Si el documento no incluye un identificador, puedes dejar este campo vacío.</small></span></label>'
+    : "";
+  const employeeReference = '<div class="hr-selected-employee"><div><small>COLABORADOR DE LA SOLICITUD</small><strong>' + escapeHtml(selectedEmployee.full_name) + '</strong></div><span>' + escapeHtml(selectedEmployee.employee_number) + '</span><input type="hidden" name="employeeId" value="' + selectedEmployee.id + '" /></div>';
+  $("#entity-modal-content").innerHTML = '<form id="hr-form"><div class="modal-head"><div><span class="eyebrow">SOLICITUD DE PERSONAL</span><h2>' + title + '</h2></div><button type="button" data-close-modal>×</button></div><input type="hidden" name="leaveType" value="' + leaveType + '" />' + employeeReference + '<div class="form-grid"><label>Subtipo<select name="subtype" required>' + subtypeOptions + '</select></label><label>Inicio<input name="startDate" type="date" required /></label><label>Fin<input name="endDate" type="date" required /></label><label class="hr-hours-field"><span class="hr-hours-label">Horas (si aplica)<button class="hr-hours-help-button" type="button" data-hr-field-help data-hr-hours-help aria-label="Explicar cuándo aplicar horas" aria-expanded="false">?</button></span><input name="totalHours" type="number" min="0" step="0.5" value="0" /><span class="hr-hours-help-popover" data-hr-field-popover data-hr-hours-popover role="note" hidden><strong>¿Cuándo se aplica?</strong><small>' + escapeHtml(hoursHelpText) + '</small></span></label>' + certificateField + '</div><label>Motivo<textarea name="reason" rows="3" required></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Enviar solicitud</button></div></form>';
+  const leaveForm = $("#hr-form");
+  const fieldHelpButtons = $$("[data-hr-field-help]", leaveForm);
+  const closeFieldHelp = (except = null) => fieldHelpButtons.forEach((button) => {
+    if (button === except) return;
+    $("[data-hr-field-popover]", button.closest(".hr-hours-field")).hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  });
+  fieldHelpButtons.forEach((button) => {
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const popover = $("[data-hr-field-popover]", button.closest(".hr-hours-field"));
+      const opening = popover.hidden;
+      closeFieldHelp(button);
+      popover.hidden = !opening;
+      button.setAttribute("aria-expanded", String(opening));
+    };
+  });
+  leaveForm.addEventListener("click", (event) => {
+    if (!event.target.closest(".hr-hours-field")) {
+      closeFieldHelp();
+    }
+  });
   bindModuleForm("#hr-form", "/api/hr/leaves", null, "Solicitud"); entityDialog.showModal();
 }
 
@@ -4307,12 +4355,13 @@ function hrServiceYears(hireDate) {
 }
 function hrAutomaticVacationPlan(plans, hireDate) {
   const years = hrServiceYears(hireDate);
+  if (years < 1) return null;
   return [...plans].filter((plan) => Number(plan.min_service_years || 0) <= years
     && (plan.max_service_years == null || plan.max_service_years === "" || Number(plan.max_service_years) >= years))
     .sort((a, b) => Number(b.min_service_years || 0) - Number(a.min_service_years || 0)
       || Number(a.max_service_years == null || a.max_service_years === "") - Number(b.max_service_years == null || b.max_service_years === "")
       || Number(b.id || 0) - Number(a.id || 0))[0]
-    || [...plans].sort((a, b) => Number(a.min_service_years || 0) - Number(b.min_service_years || 0) || Number(b.id || 0) - Number(a.id || 0))[0];
+    || null;
 }
 
 function metricCard(label, value, detail, symbol, highlight = false) {

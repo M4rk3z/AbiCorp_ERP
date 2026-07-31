@@ -1424,9 +1424,9 @@ export const migrations = [
         WHEN 'night' THEN (SELECT id FROM hr_work_shifts WHERE code = 'TUR-00003')
         WHEN 'mixed' THEN (SELECT id FROM hr_work_shifts WHERE code = 'TUR-00004')
       END WHERE work_shift_id IS NULL`,
-      "INSERT OR IGNORE INTO hr_vacation_plans (code, name, annual_days, min_service_years, max_service_years, description) VALUES ('PLV-00001', 'Plan estándar', 12, 0, 1, 'Plan inicial de 12 días')",
+      "INSERT OR IGNORE INTO hr_vacation_plans (code, name, annual_days, min_service_years, max_service_years, description) VALUES ('PLV-00001', 'Plan estándar', 12, 1, 1, 'Plan inicial de 12 días al cumplir el primer año')",
       "INSERT OR IGNORE INTO hr_vacation_plans (code, name, annual_days, min_service_years, max_service_years, description) VALUES ('PLV-00002', 'Plan ampliado', 18, 2, 4, 'Plan de 18 días por año')",
-      "INSERT OR IGNORE INTO hr_vacation_plans (code, name, annual_days, min_service_years, max_service_years, description) VALUES ('PLV-00003', 'Plan ejecutivo', 24, 0, NULL, 'Plan de 24 días por año')",
+      "INSERT OR IGNORE INTO hr_vacation_plans (code, name, annual_days, min_service_years, max_service_years, description) VALUES ('PLV-00003', 'Plan ejecutivo', 24, 1, NULL, 'Plan de 24 días por año')",
       `UPDATE hr_employee_profiles SET vacation_plan_id = (
         SELECT id FROM hr_vacation_plans WHERE annual_days = hr_employee_profiles.vacation_balance ORDER BY id LIMIT 1
       ) WHERE vacation_plan_id IS NULL AND vacation_balance > 0`,
@@ -1583,6 +1583,52 @@ export const migrations = [
       "ALTER TABLE hr_employee_profiles ADD COLUMN service_start_date TEXT",
       "ALTER TABLE hr_employee_profiles ADD COLUMN service_end_date TEXT",
       "ALTER TABLE hr_employee_profiles ADD COLUMN required_service_hours REAL NOT NULL DEFAULT 0 CHECK (required_service_hours >= 0)",
+    ],
+  },
+  {
+    version: 22,
+    name: "vacations_begin_after_first_anniversary",
+    statements: [
+      `UPDATE hr_vacation_plans
+        SET min_service_years = 1,
+            max_service_years = CASE
+              WHEN max_service_years IS NOT NULL AND max_service_years < 1 THEN 1
+              ELSE max_service_years
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE min_service_years < 1`,
+      `UPDATE hr_employee_profiles
+        SET vacation_plan_id = NULL,
+            vacation_balance = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE employment_type = 'permanent'
+          AND employee_id IN (
+            SELECT id
+            FROM employees
+            WHERE hire_date IS NULL
+               OR date(hire_date, '+1 year') > date('now')
+      )`,
+    ],
+  },
+  {
+    version: 23,
+    name: "vacation_cycles_and_advance_balance",
+    statements: [
+      "ALTER TABLE hr_employee_profiles ADD COLUMN vacation_debt REAL NOT NULL DEFAULT 0 CHECK (vacation_debt >= 0)",
+      "ALTER TABLE hr_employee_profiles ADD COLUMN vacation_cycle_year INTEGER NOT NULL DEFAULT 0 CHECK (vacation_cycle_year >= 0)",
+      "ALTER TABLE hr_employee_profiles ADD COLUMN vacation_renewed_at TEXT",
+      "ALTER TABLE hr_leave_requests ADD COLUMN vacation_advance INTEGER NOT NULL DEFAULT 0 CHECK (vacation_advance IN (0, 1))",
+      "ALTER TABLE hr_leave_requests ADD COLUMN vacation_applied INTEGER NOT NULL DEFAULT 0 CHECK (vacation_applied IN (0, 1))",
+      `UPDATE hr_employee_profiles
+        SET vacation_cycle_year = COALESCE((
+          SELECT MAX(0,
+            CAST(strftime('%Y', 'now') AS INTEGER) - CAST(strftime('%Y', e.hire_date) AS INTEGER)
+            - CASE WHEN strftime('%m-%d', 'now') < strftime('%m-%d', e.hire_date) THEN 1 ELSE 0 END
+          )
+          FROM employees e
+          WHERE e.id = hr_employee_profiles.employee_id
+            AND e.hire_date IS NOT NULL
+        ), 0)`,
     ],
   },
 ];
