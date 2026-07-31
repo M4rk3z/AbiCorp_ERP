@@ -8,10 +8,14 @@
     "dev": "node --watch src/erp-server.js",
     "start": "node src/erp-server.js",
     "reset-admin": "node scripts/reset-admin.js",
+    "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.mjs",
     "test": "node --test",
     "check": "node --check src/erp-server.js"
   },
   "engines": {
     "node": ">=22.5 <25"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
   }
 }
