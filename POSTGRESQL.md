@@ -61,3 +61,21 @@ intencionalmente una migración existente:
 ~~~
 
 Esta opción sustituye las tablas de destino con el contenido del respaldo.
+
+## Centro de Gestión local
+
+Después de verificar la migración, inicia el panel conectado a la misma base:
+
+~~~powershell
+.\start-control-postgres.cmd
+~~~
+
+Pega la **External Database URL** cuando se solicite. La URL permanece oculta y
+solo existe mientras la ventana está abierta. Después abre:
+
+~~~text
+http://127.0.0.1:5051
+~~~
+
+Usa el administrador del Centro de Gestión que existía en el respaldo. Mantén
+la ventana de PowerShell abierta y presiona **Ctrl+C** para apagar el panel.

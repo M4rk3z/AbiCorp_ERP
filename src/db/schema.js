@@ -1639,6 +1639,18 @@ export const migrations = [
       "ALTER TABLE documents ADD COLUMN content_data BLOB",
     ],
   },
+  {
+    version: 25,
+    name: "company_assets",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS company_assets (
+        asset_key TEXT PRIMARY KEY,
+        asset_data BLOB NOT NULL,
+        mime_type TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ],
+  },
 ];
 
 export const baseRoles = [

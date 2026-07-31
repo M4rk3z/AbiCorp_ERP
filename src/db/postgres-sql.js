@@ -17,6 +17,24 @@ export function quoteIdentifier(value) {
   return `"${identifier}"`;
 }
 
+export function postgresParameter(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  return value;
+}
+
+export function canonicalDatabaseValue(value) {
+  const normalized = postgresParameter(value);
+  if (Buffer.isBuffer(normalized)) {
+    return { buffer: normalized.toString("base64") };
+  }
+  if (typeof normalized === "bigint") return Number(normalized);
+  return normalized;
+}
+
 export function translatePostgresSql(source, { returning = false } = {}) {
   const original = String(source ?? "").trim();
   if (!original) return "";
