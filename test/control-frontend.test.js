@@ -29,8 +29,19 @@ test("la cuenta ADMIN es de solo lectura en interfaz y servidor", () => {
 });
 
 test("el Centro de Gestion versiona la interfaz corregida", () => {
-  assert.match(html, /styles\.css\?v=20260804-20/);
-  assert.match(html, /app\.js\?v=20260804-20/);
+  assert.match(html, /styles\.css\?v=20260807-21/);
+  assert.match(html, /app\.js\?v=20260807-21/);
+});
+
+test("la eliminacion de empresas exige confirmacion escrita y comunica su impacto", () => {
+  assert.match(html, /id="remove-company-dialog"/);
+  assert.match(html, /id="confirm-remove-company"[^>]*disabled/);
+  assert.match(source, /data-delete-company/);
+  assert.match(source, /function refreshCompanyDeleteConfirmation/);
+  assert.match(source, /body: \{ confirmCode: form\.elements\.confirmCode\.value \}/);
+  assert.match(backend, /method === "DELETE"[^]*deleteCompany/);
+  assert.match(backend, /Debe permanecer al menos una empresa activa/);
+  assert.match(backend, /DROP SCHEMA IF EXISTS/);
 });
 
 test("el Centro de Gestion organiza los modulos por paquetes operativos", () => {

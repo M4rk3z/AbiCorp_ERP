@@ -2336,6 +2336,50 @@ export const migrations = [
       "CREATE INDEX IF NOT EXISTS idx_hr_leave_balance_employee ON hr_leave_balance_snapshots(employee_id, created_at DESC)",
     ],
   },
+  {
+    version: 37,
+    name: "payroll_preparation",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS payroll_preparations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period_id INTEGER NOT NULL UNIQUE REFERENCES payroll_periods(id) ON DELETE RESTRICT,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'finalized')),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        finalized_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finalized_at TEXT
+      )`,
+      `CREATE TABLE IF NOT EXISTS payroll_preparation_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        preparation_id INTEGER NOT NULL REFERENCES payroll_preparations(id) ON DELETE CASCADE,
+        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+        currency_code TEXT NOT NULL DEFAULT 'MXN',
+        base_pay REAL NOT NULL DEFAULT 0 CHECK (base_pay >= 0),
+        other_perceptions REAL NOT NULL DEFAULT 0 CHECK (other_perceptions >= 0),
+        unpaid_leave_deduction REAL NOT NULL DEFAULT 0 CHECK (unpaid_leave_deduction >= 0),
+        tax_deduction REAL NOT NULL DEFAULT 0 CHECK (tax_deduction >= 0),
+        social_security_deduction REAL NOT NULL DEFAULT 0 CHECK (social_security_deduction >= 0),
+        other_deductions REAL NOT NULL DEFAULT 0 CHECK (other_deductions >= 0),
+        gross_pay REAL NOT NULL DEFAULT 0 CHECK (gross_pay >= 0),
+        total_deductions REAL NOT NULL DEFAULT 0 CHECK (total_deductions >= 0),
+        net_pay REAL NOT NULL DEFAULT 0 CHECK (net_pay >= 0),
+        notes TEXT NOT NULL DEFAULT '',
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(preparation_id, employee_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS payroll_preparation_incidents (
+        preparation_line_id INTEGER NOT NULL REFERENCES payroll_preparation_lines(id) ON DELETE CASCADE,
+        incident_id INTEGER NOT NULL UNIQUE REFERENCES hr_payroll_incidents(id) ON DELETE RESTRICT,
+        deduction_amount REAL NOT NULL DEFAULT 0 CHECK (deduction_amount >= 0),
+        PRIMARY KEY(preparation_line_id, incident_id)
+      )`,
+      "CREATE INDEX IF NOT EXISTS idx_payroll_preparation_status ON payroll_preparations(status, period_id)",
+      "CREATE INDEX IF NOT EXISTS idx_payroll_preparation_employee ON payroll_preparation_lines(employee_id, preparation_id)",
+    ],
+  },
 ];
 
 export const baseRoles = [

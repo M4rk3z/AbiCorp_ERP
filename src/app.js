@@ -22,6 +22,7 @@ import * as hrImport from "./core/hr-import.js";
 import * as hrPortal from "./core/hr-portal.js";
 import * as hrSchedules from "./core/hr-schedules.js";
 import * as payrollCfdi from "./core/payroll-cfdi.js";
+import * as payrollPreparation from "./core/payroll-preparation.js";
 import { createPrivateStorage, PrivateStorageError } from "./core/private-storage.js";
 import {
   assertEmployeeAccess,
@@ -257,7 +258,7 @@ export function createTenantApplication(options = {}) {
         await serveStatic(req, res, url.pathname);
       }
     } catch (error) {
-      if (error instanceof HttpError || error instanceof inventory.InventoryError || error instanceof sales.SalesError || error instanceof production.ProductionError || error instanceof quality.QualityError || error instanceof maintenance.MaintenanceError || error instanceof logistics.LogisticsError || error instanceof finance.FinanceError || error instanceof tasks.TasksError || error instanceof purchases.PurchasesError || error instanceof safety.SafetyError || error instanceof hr.HrError || error instanceof hrImport.HrImportError || error instanceof hrPortal.HrPortalError || error instanceof hrSchedules.HrScheduleError || error instanceof payrollCfdi.PayrollCfdiError || error instanceof PrivateStorageError) {
+      if (error instanceof HttpError || error instanceof inventory.InventoryError || error instanceof sales.SalesError || error instanceof production.ProductionError || error instanceof quality.QualityError || error instanceof maintenance.MaintenanceError || error instanceof logistics.LogisticsError || error instanceof finance.FinanceError || error instanceof tasks.TasksError || error instanceof purchases.PurchasesError || error instanceof safety.SafetyError || error instanceof hr.HrError || error instanceof hrImport.HrImportError || error instanceof hrPortal.HrPortalError || error instanceof hrSchedules.HrScheduleError || error instanceof payrollCfdi.PayrollCfdiError || error instanceof payrollPreparation.PayrollPreparationError || error instanceof PrivateStorageError) {
         return sendJson(res, error.status, { error: error.message, details: error.details });
       }
       console.error(error);
@@ -484,8 +485,13 @@ export function createTenantApplication(options = {}) {
     if (path === "/api/hr/structure/departments" && method === "POST") return hrDepartmentCreate(req, res, context);
     const hrDepartmentStructureMatch = path.match(/^\/api\/hr\/structure\/departments\/(\d+)$/);
     if (hrDepartmentStructureMatch && method === "PATCH") return hrDepartmentUpdate(req, res, context, Number(hrDepartmentStructureMatch[1]));
-    if (path === "/api/payroll/control" && method === "GET") return payrollControl(res, context);
+    if (path === "/api/payroll/control" && method === "GET") return payrollControl(res, context, url.searchParams);
     if (path === "/api/payroll/periods" && method === "POST") return payrollPeriodCreate(req, res, context);
+    if (path === "/api/payroll/preparation/generate" && method === "POST") return payrollPreparationGenerate(req, res, context);
+    if (path === "/api/payroll/preparation/finalize" && method === "POST") return payrollPreparationFinalize(req, res, context);
+    const payrollPreparationLineMatch = path.match(/^\/api\/payroll\/preparation\/lines\/(\d+)$/);
+    if (payrollPreparationLineMatch && method === "PATCH")
+      return payrollPreparationLineUpdate(req, res, context, Number(payrollPreparationLineMatch[1]));
     if (path === "/api/payroll/cfdi/receipts" && method === "POST") return payrollCfdiImport(req, res, context);
     const payrollCfdiMatch = path.match(/^\/api\/payroll\/cfdi\/receipts\/(\d+)$/);
     if (payrollCfdiMatch && method === "GET") return payrollCfdiDetail(res, context, Number(payrollCfdiMatch[1]));
@@ -2483,20 +2489,56 @@ export function createTenantApplication(options = {}) {
     res.end(data);
   }
 
-  function payrollControl(res, context) {
+  function payrollControl(res, context, searchParams) {
     requirePermission(context, "payroll.view");
-    const incidents = db.prepare(`SELECT i.*, l.folio, e.employee_number, e.full_name AS employee_name
+    const incidents = db.prepare(`SELECT i.*, l.folio, e.employee_number, e.full_name AS employee_name,
+      (SELECT pp.status FROM payroll_preparation_incidents pi
+       JOIN payroll_preparation_lines pl ON pl.id = pi.preparation_line_id
+       JOIN payroll_preparations pp ON pp.id = pl.preparation_id
+       WHERE pi.incident_id = i.id ORDER BY pp.id DESC LIMIT 1) AS preparation_status
       FROM hr_payroll_incidents i JOIN hr_leave_requests l ON l.id = i.leave_request_id
       JOIN employees e ON e.id = i.employee_id ORDER BY i.created_at DESC, i.id DESC`).all();
     const cfdi = payrollCfdi.control(db);
+    const preparation = payrollPreparation.control(db, searchParams?.get("periodId"));
     sendJson(res, 200, {
       incidents,
+      preparation,
       cfdi: { ...cfdi, storageProvider: privateStorage.provider },
       indicators: {
         pending: incidents.filter((row) => row.status === "pending").length,
         processed: incidents.filter((row) => row.status === "processed").length,
+        included: incidents.filter((row) => row.preparation_status).length,
       },
     });
+  }
+
+  async function payrollPreparationGenerate(req, res, context) {
+    requirePermission(context, "payroll.manage");
+    const body = await readJson(req);
+    const result = payrollPreparation.generate(db, body.periodId, context.user.id);
+    moduleAudit(req, context, "payroll", "payroll.preparation_generated", "Prenómina calculada",
+      { preparationId: result.preparation?.id, periodId: result.selectedPeriod?.id, employees: result.totals.employees },
+      { periodId: body.periodId }, "payroll_preparation");
+    sendJson(res, 200, result);
+  }
+
+  async function payrollPreparationLineUpdate(req, res, context, id) {
+    requirePermission(context, "payroll.manage");
+    const body = await readJson(req);
+    const line = payrollPreparation.updateLine(db, id, body, context.user.id);
+    moduleAudit(req, context, "payroll", "payroll.preparation_line_updated", "Línea de prenómina actualizada",
+      { lineId: line.id, employeeId: line.employee_id, netPay: line.net_pay }, body, "payroll_preparation_line");
+    sendJson(res, 200, { line });
+  }
+
+  async function payrollPreparationFinalize(req, res, context) {
+    requirePermission(context, "payroll.approve");
+    const body = await readJson(req);
+    const result = payrollPreparation.finalize(db, body.preparationId, context.user.id);
+    moduleAudit(req, context, "payroll", "payroll.preparation_finalized", "Prenómina finalizada",
+      { preparationId: result.preparation?.id, periodId: result.selectedPeriod?.id, netPay: result.totals.netPay },
+      {}, "payroll_preparation");
+    sendJson(res, 200, result);
   }
 
   async function payrollPeriodCreate(req, res, context) {

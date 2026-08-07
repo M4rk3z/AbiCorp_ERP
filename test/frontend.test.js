@@ -479,6 +479,14 @@ test("nomina es un submodulo de Recursos Humanos con salida controlada a Finanza
   assert.match(source, /tab\("periods", "Periodos"/);
   assert.match(source, /tab\("incidents", "Prenómina"/);
   assert.match(source, /Administrado por Recursos Humanos/);
+  assert.match(source, /Vista previa de pago/);
+  assert.match(source, /Calcular prenómina/);
+  assert.match(source, /DESGLOSE POR COLABORADOR/);
+  assert.match(source, /Retención ISR/);
+  assert.match(source, /Seguridad social \/ IMSS/);
+  assert.match(source, /Lista para prenómina/);
+  assert.match(source, /\/api\/payroll\/preparation\/generate/);
+  assert.match(stylesSource, /\.prepayroll-summary/);
   assert.doesNotMatch(html, /option value="payroll"/);
 });
 
