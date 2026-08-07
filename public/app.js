@@ -4070,7 +4070,7 @@ let hrUiModulePromise = null;
 
 async function loadHrUiModule() {
   if (!hrUiModulePromise) {
-    hrUiModulePromise = import("./modules/hr.js?v=20260807-78")
+    hrUiModulePromise = import("./modules/hr.js?v=20260807-81")
       .then(({ createHrModule }) => createHrModule({ $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials }))
       .catch((error) => { hrUiModulePromise = null; throw error; });
   }

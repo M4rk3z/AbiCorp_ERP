@@ -435,8 +435,8 @@ test("finanzas controla ingresos egresos presupuestos y conciliaciones", () => {
 });
 
 test("el acceso del colaborador es minimalista y muestra la empresa seleccionada", () => {
-  assert.match(portalHtml, /portal\.css\?v=20260806-48/);
-  assert.match(portalHtml, /portal\.js\?v=20260806-48/);
+  assert.match(portalHtml, /portal\.css\?v=20260807-81/);
+  assert.match(portalHtml, /portal\.js\?v=20260807-81/);
   assert.match(portalHtml, /class="brand-copy"/);
   assert.ok((portalHtml.match(/data-portal-company-name/g) ?? []).length >= 2);
   assert.doesNotMatch(portalHtml, /public-features|Tu vida laboral/);
@@ -445,13 +445,12 @@ test("el acceso del colaborador es minimalista y muestra la empresa seleccionada
   assert.match(portalStyles, /Acceso publico minimalista/);
 });
 
-test("horarios presenta un calendario semanal guiado y conserva herramientas avanzadas", () => {
-  assert.match(hrSource, /CALENDARIO DE PERSONAL/);
-  assert.match(hrSource, /Crear semana autom.ticamente/);
-  assert.match(hrSource, /Completar con turnos asignados/);
-  assert.match(hrSource, /data-schedule-cell/);
-  assert.match(hrSource, /hrScheduleSuggestion/);
-  assert.match(hrSource, /Herramientas avanzadas/);
+test("horarios presenta un calendario automatico con ausencias y conserva el control real", () => {
+  assert.match(hrSource, /CALENDARIO AUTOM.TICO DE PERSONAL/);
+  assert.match(hrSource, /No necesitas generar ni publicar semanas/);
+  assert.match(hrSource, /data-auto-schedule-week/);
+  assert.match(hrSource, /hrAutomaticCalendarCell/);
+  assert.match(hrSource, /Control real y correcciones/);
   assert.match(hrSource, /Programado contra real/);
 });
 
@@ -492,7 +491,7 @@ test("la interfaz reutiliza respuestas recientes y RH carga control y catálogos
   assert.match(source, /const control = await api\("\/api\/hr\/control", \{ cacheTtlMs: HR_CONTROL_CACHE_MS \}\)/);
   assert.match(source, /const options = control\.options \|\| await api\("\/api\/hr\/options"\)/);
   assert.match(source, /api\("\/api\/notifications", \{ cache: false \}\)/);
-  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260807-78"\)/);
+  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260807-81"\)/);
   assert.match(hrSource, /export function createHrModule/);
   assert.doesNotMatch(appSource, /\bformatDateTime\b/);
   assert.doesNotMatch(hrSource, /\bformatDateTime\b/);
@@ -508,7 +507,8 @@ test("el portal, las políticas y el acceso individual de RH tienen responsabili
   assert.match(portalModalSource, /Guardar estado/);
   assert.match(portalModalSource, /perfil de cada colaborador/);
   assert.doesNotMatch(portalModalSource, /Días festivos|Cobertura por departamento|Accesos individuales|reset-pin/);
-  assert.match(hrSource, /Políticas y calendario/);
+  assert.match(hrSource, /Fechas feriadas/);
+  assert.match(hrSource, /Políticas y cobertura/);
   assert.match(hrSource, /\/api\/hr\/policies/);
   assert.match(hrSource, /hrEmployeePortalAccessMarkup/);
   assert.match(hrSource, /USUARIO DE ACCESO/);
@@ -516,6 +516,8 @@ test("el portal, las políticas y el acceso individual de RH tienen responsabili
   assert.match(hrSource, /Disponibilidad de la cuenta/);
   assert.match(hrSource, /type=\"radio\" name=\"portalAccessStatus\"/);
   assert.match(hrSource, /\[data-profile-portal-status\]:checked/);
+  assert.match(portalSource, /const formNode = event\.currentTarget/);
+  assert.doesNotMatch(portalSource, /event\.currentTarget\.reset\(\)/);
 });
 
 test("el expediente de RH usa pestañas internas y abre la sección con errores", () => {

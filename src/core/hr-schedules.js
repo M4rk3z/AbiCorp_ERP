@@ -2,7 +2,7 @@ export class HrScheduleError extends Error {
   constructor(status, message, details = null) { super(message); this.status = status; this.details = details; }
 }
 
-export function control(db, periodId = null) {
+export function control(db, periodId = null, calendarStart = null) {
   const periods = db.prepare(`SELECT p.*,
     (SELECT COUNT(*) FROM hr_schedule_versions v WHERE v.period_id = p.id) AS versions_count,
     (SELECT MAX(version_number) FROM hr_schedule_versions v WHERE v.period_id = p.id AND v.status = 'published') AS published_version
@@ -22,7 +22,14 @@ export function control(db, periodId = null) {
     FROM hr_schedule_corrections c JOIN employees e ON e.id = c.employee_id
     LEFT JOIN users u ON u.id = c.requested_by LEFT JOIN users d ON d.id = c.decided_by
     ORDER BY c.status = 'pending' DESC, c.created_at DESC LIMIT 200`).all();
-  return { periods, selectedPeriod, versions, activeVersion, entries, comparisons, corrections };
+  const automaticStart = monday(calendarStart || today());
+  const automaticEnd = addDays(automaticStart, 6);
+  const automaticEntries = workforceSchedule(db, automaticStart, automaticEnd);
+  return {
+    periods, selectedPeriod, versions, activeVersion, entries, comparisons, corrections,
+    automaticRange: { startDate: automaticStart, endDate: automaticEnd },
+    automaticEntries,
+  };
 }
 
 export function createPeriod(db, body, userId) {
@@ -203,17 +210,95 @@ export function correctionAction(db, id, body, userId) {
   } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
 
-export function employeeSchedule(db, employeeId, startDate = today(), endDate = addDays(today(), 27)) {
+export function employeeSchedule(db, employeeId, startDate = monday(today()), endDate = addDays(monday(today()), 34)) {
   const id = existingEmployee(db, employeeId);
-  return db.prepare(`SELECT s.work_date, s.start_time AS scheduled_start, s.end_time AS scheduled_end,
-    s.break_minutes AS scheduled_break, s.is_day_off, v.version_number, a.actual_start, a.actual_end,
-    a.break_minutes AS actual_break, a.version_number AS actual_version
-    FROM hr_scheduled_shifts s JOIN hr_schedule_versions v ON v.id = s.schedule_version_id
-    LEFT JOIN hr_actual_shift_versions a ON a.employee_id = s.employee_id AND a.work_date = s.work_date AND a.is_current = 1
-    WHERE s.employee_id = ? AND s.work_date BETWEEN ? AND ? AND v.status = 'published'
+  return workforceSchedule(db, requiredDate(startDate, "fecha inicial"), requiredDate(endDate, "fecha final"), [id]);
+}
+
+export function workforceSchedule(db, startDate, endDate, employeeIds = null) {
+  const start = requiredDate(startDate, "fecha inicial"), end = requiredDate(endDate, "fecha final");
+  if (end < start) throw new HrScheduleError(400, "El rango del calendario tiene fechas invertidas.");
+  if (daysBetween(start, end) > 62) throw new HrScheduleError(400, "El calendario automático admite hasta 63 días por consulta.");
+  const requestedIds = Array.isArray(employeeIds) && employeeIds.length
+    ? employeeIds.map((id) => positiveId(id)) : null;
+  const filter = requestedIds ? ` AND e.id IN (${requestedIds.map(() => "?").join(",")})` : "";
+  const people = db.prepare(`SELECT e.id, e.employee_number, e.full_name, e.status,
+    p.work_shift_id, ws.name AS shift_name, ws.schedule_json, ws.start_time, ws.end_time,
+    ws.work_days, ws.break_minutes
+    FROM employees e LEFT JOIN hr_employee_profiles p ON p.employee_id = e.id
+    LEFT JOIN hr_work_shifts ws ON ws.id = p.work_shift_id
+    WHERE e.status <> 'inactive'${filter} ORDER BY e.full_name`).all(...(requestedIds || []));
+  if (!people.length) return [];
+  const ids = people.map((person) => Number(person.id));
+  const placeholders = ids.map(() => "?").join(",");
+  const published = db.prepare(`SELECT s.*, v.version_number FROM hr_scheduled_shifts s
+    JOIN hr_schedule_versions v ON v.id = s.schedule_version_id
+    WHERE s.employee_id IN (${placeholders}) AND s.work_date BETWEEN ? AND ? AND v.status = 'published'
       AND NOT EXISTS (SELECT 1 FROM hr_schedule_versions newer WHERE newer.period_id = v.period_id
-        AND newer.status = 'published' AND newer.version_number > v.version_number)
-    ORDER BY s.work_date`).all(id, startDate, endDate).map(comparisonValues);
+        AND newer.status = 'published' AND newer.version_number > v.version_number)`).all(...ids, start, end);
+  const actual = db.prepare(`SELECT * FROM hr_actual_shift_versions
+    WHERE employee_id IN (${placeholders}) AND work_date BETWEEN ? AND ? AND is_current = 1`).all(...ids, start, end);
+  const leaves = db.prepare(`SELECT id, folio, employee_id, leave_type, subtype, start_date, end_date,
+    total_hours, working_days FROM hr_leave_requests
+    WHERE employee_id IN (${placeholders}) AND status = 'approved' AND start_date <= ? AND end_date >= ?
+    ORDER BY start_date, id`).all(...ids, end, start);
+  const holidays = db.prepare(`SELECT holiday_date, name FROM hr_holidays
+    WHERE is_active = 1 AND holiday_date BETWEEN ? AND ? ORDER BY holiday_date`).all(start, end);
+  const publishedByKey = new Map(published.map((row) => [`${row.employee_id}:${row.work_date}`, row]));
+  const actualByKey = new Map(actual.map((row) => [`${row.employee_id}:${row.work_date}`, row]));
+  const holidayByDate = new Map(holidays.map((row) => [row.holiday_date, row]));
+  const result = [];
+  for (const person of people) {
+    const shift = parsedShift(person);
+    for (let offset = 0; offset <= daysBetween(start, end); offset += 1) {
+      const workDate = addDays(start, offset), key = `${person.id}:${workDate}`;
+      const publishedEntry = publishedByKey.get(key);
+      const dayKey = DAY_KEYS[new Date(`${workDate}T00:00:00Z`).getUTCDay()];
+      const group = shift.find((item) => item.days.includes(dayKey));
+      const periods = (group?.periods || []).filter((item) => validTime(item.start) && validTime(item.end));
+      const base = publishedEntry ? {
+        start: publishedEntry.start_time, end: publishedEntry.end_time,
+        breakMinutes: Number(publishedEntry.break_minutes || 0), isDayOff: Boolean(publishedEntry.is_day_off),
+        versionNumber: Number(publishedEntry.version_number || 0), source: "published",
+      } : {
+        start: periods[0]?.start || null, end: periods.at(-1)?.end || null,
+        breakMinutes: periods.length > 1
+          ? Math.max(0, timeValue(periods[1].start) - timeValue(periods[0].end))
+          : Number(person.break_minutes || 0),
+        isDayOff: !periods.length, versionNumber: null, source: "automatic",
+      };
+      const holiday = holidayByDate.get(workDate);
+      const leave = leaves.find((row) => Number(row.employee_id) === Number(person.id)
+        && row.start_date <= workDate && row.end_date >= workDate);
+      const partialLeave = Boolean(leave && Number(leave.total_hours || 0) > 0
+        && leave.start_date === leave.end_date && !base.isDayOff && !holiday);
+      let calendarStatus = base.isDayOff ? "rest" : "scheduled", eventLabel = "";
+      let effectiveDayOff = base.isDayOff;
+      if (holiday) {
+        calendarStatus = "holiday"; eventLabel = holiday.name; effectiveDayOff = true;
+      } else if (leave && !base.isDayOff) {
+        calendarStatus = leave.leave_type;
+        eventLabel = leaveLabel(leave.leave_type, leave.subtype);
+        effectiveDayOff = !partialLeave;
+      }
+      const actualEntry = actualByKey.get(key);
+      const row = comparisonValues({
+        employee_id: Number(person.id), employee_number: person.employee_number,
+        employee_name: person.full_name, shift_name: person.shift_name || "Sin turno asignado",
+        work_date: workDate, scheduled_start: base.start, scheduled_end: base.end,
+        scheduled_break: base.breakMinutes, is_day_off: effectiveDayOff ? 1 : 0,
+        version_number: base.versionNumber, actual_start: actualEntry?.actual_start || null,
+        actual_end: actualEntry?.actual_end || null, actual_break: actualEntry?.break_minutes || 0,
+        actual_version: actualEntry?.version_number || null,
+      });
+      result.push({ ...row, calendar_status: calendarStatus, event_label: eventLabel,
+        schedule_source: base.source, base_is_day_off: base.isDayOff ? 1 : 0,
+        holiday_name: holiday?.name || null, leave_id: leave?.id || null,
+        leave_folio: leave?.folio || null, leave_type: leave?.leave_type || null,
+        absence_hours: partialLeave ? Number(leave.total_hours || 0) : 0 });
+    }
+  }
+  return result;
 }
 
 function comparePeriod(db, periodId) {
@@ -325,6 +410,9 @@ function optionalTime(value) { const cleanValue = String(value || "").trim(); if
 function validTime(value) { return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || "")); }
 function requiredDate(value, label) { const cleanValue = String(value || ""); if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanValue) || Number.isNaN(Date.parse(`${cleanValue}T00:00:00Z`))) throw new HrScheduleError(400, `Captura una ${label} válida.`); return cleanValue; }
 function addDays(date, days) { const value = new Date(`${date}T00:00:00Z`); value.setUTCDate(value.getUTCDate() + days); return value.toISOString().slice(0, 10); }
+function monday(date) { const value = requiredDate(date, "fecha del calendario"); const weekday = new Date(`${value}T00:00:00Z`).getUTCDay(); return addDays(value, weekday === 0 ? -6 : 1 - weekday); }
+function daysBetween(start, end) { return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000); }
+function leaveLabel(type, subtype) { const label = ({ vacation: "Vacaciones", permission: "Permiso", incapacity: "Incapacidad" })[type] || "Ausencia"; return subtype ? `${label} · ${subtype}` : label; }
 function integer(value, min, max, label) { const number = Number(value); if (!Number.isInteger(number) || number < min || number > max) throw new HrScheduleError(400, `El ${label} no es válido.`); return number; }
 function positiveId(value) { const number = Number(value); if (!Number.isInteger(number) || number < 1) throw new HrScheduleError(400, "Identificador no válido."); return number; }
 function flag(value) { return value === true || value === 1 || value === "1" || value === "true" ? 1 : 0; }
