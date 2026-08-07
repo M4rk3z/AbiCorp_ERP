@@ -18,6 +18,7 @@ export class PostgresDatabaseSync {
     this.schema = postgresSchemaName(schema, "");
     this.timeoutMs = timeoutMs;
     this.closed = false;
+    this.isTransaction = false;
     const initBuffer = new SharedArrayBuffer(POSTGRES_INITIAL_RESPONSE_BYTES);
     this.worker = new Worker(new URL("./postgres-worker.js", import.meta.url), {
       workerData: {
@@ -45,7 +46,10 @@ export class PostgresDatabaseSync {
   }
 
   exec(sql) {
-    return this.#request("exec", { sql });
+    const value = this.#request("exec", { sql });
+    const transactionState = postgresTransactionState(sql);
+    if (transactionState !== null) this.isTransaction = transactionState;
+    return value;
   }
 
   transaction(callback) {
@@ -74,6 +78,7 @@ export class PostgresDatabaseSync {
       this.#request("close");
     } finally {
       this.closed = true;
+      this.isTransaction = false;
       this.worker.unref();
     }
   }
@@ -110,6 +115,13 @@ export class PostgresDatabaseSync {
     }
     return response.value;
   }
+}
+
+export function postgresTransactionState(sql) {
+  const statement = String(sql ?? "").trim();
+  if (/^BEGIN(?:\s+IMMEDIATE)?\b/i.test(statement)) return true;
+  if (/^(?:COMMIT|ROLLBACK)\b/i.test(statement)) return false;
+  return null;
 }
 
 export function postgresResponseBufferBytes(

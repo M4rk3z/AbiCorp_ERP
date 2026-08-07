@@ -4,7 +4,13 @@ node_modules/
 .pnpm-store/
 .env
 coverage/
+.tmp-phase5-preview/
+.tmp-phase9-preview/
 *.log
+
+# Configuracion local cifrada del Centro de Gestion
+config-local/*
+!config-local/LEEME.txt
 
 # Centro de Gestión externo (se conserva únicamente en este equipo)
 control/

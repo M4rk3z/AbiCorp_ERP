@@ -1,5 +1,6 @@
 const state = {
   user: null,
+  company: null,
   csrfToken: "",
   companySlug: "",
   currentView: "dashboard",
@@ -32,6 +33,8 @@ const state = {
   safetyOptions: null,
   safetyHubSection: "safety_incidents",
   hrOptions: null,
+  hrControl: null,
+  payrollSection: "overview",
   settingsSection: "general",
   renderToken: 0,
   clockTimer: null,
@@ -40,7 +43,15 @@ const state = {
 // En un host remoto, la interfaz y la API comparten el mismo origen. Live Server
 // conserva el puente al backend local que escucha en el puerto 5050.
 const isRemoteHost = !["", "localhost", "127.0.0.1"].includes(location.hostname);
-const API_BASE = location.port === "5050" || isRemoteHost ? "" : "http://127.0.0.1:5050";
+const API_BASE = ["5050", "5150", "5260"].includes(location.port) || isRemoteHost ? "" : "http://127.0.0.1:5050";
+const API_GET_CACHE_MS = 15_000;
+const HR_CONTROL_CACHE_MS = 60_000;
+const apiGetCache = new Map();
+const apiGetPending = new Map();
+const guardedFormSubmissions = [];
+const guardedFormExclusions = new Set([
+  "login-form", "password-form", "dashboard-shortcut-form", "hr-bulk-form", "annual-maintenance-import-form",
+]);
 
 const catalogUi = {
   companies: { label: "Empresas", singular: "Empresa", description: "Razones sociales y entidades operativas.", fields: [
@@ -77,6 +88,9 @@ const masterUi = {
   ] },
   customers: { label: "Clientes", singular: "Cliente", description: "Datos comerciales, fiscales y condiciones de crédito.", code: "code", name: "legal_name", fields: partyFieldsUi("customer") },
   suppliers: { label: "Proveedores", singular: "Proveedor", description: "Fuentes de suministro y condiciones de compra.", code: "code", name: "legal_name", fields: partyFieldsUi("supplier") },
+  areas: { label: "Áreas", singular: "Área", description: "Departamentos y unidades funcionales de la organización.", code: "code", name: "name", fields: [
+    ["code", "Código", "text", true], ["name", "Nombre", "text", true], ["description", "Descripción", "textarea"], ["is_active", "Registro activo", "boolean"],
+  ] },
   employees: { label: "Empleados", singular: "Empleado", description: "Personal interno, puestos y asignación organizacional.", code: "employee_number", name: "full_name", category: "status", categories: { active: "Activos", leave: "Permiso / ausencia", inactive: "Inactivos" }, fields: [
     ["employee_number", "Número de empleado", "text", true], ["full_name", "Nombre completo", "text", true], ["email", "Correo", "email"], ["phone", "Teléfono", "text"], ["area_id", "Área", "area"], ["position", "Puesto", "text"], ["hire_date", "Fecha de ingreso", "date"], ["status", "Estado", "employee_status", true],
   ] },
@@ -105,6 +119,7 @@ const tasksViews = new Set(["tasks_assigned", "tasks_flows", "tasks_comments", "
 const purchasesViews = new Set(["purchases_control", "purchases_requests", "purchases_comparisons", "purchases_orders", "purchases_receipts", "purchases_returns", "purchases_invoices"]);
 const safetyViews = new Set(["safety_control"]);
 const hrViews = new Set(["hr_control"]);
+const payrollViews = new Set(["payroll_control"]);
 
 const automaticCatalogCodes = {
   companies: { field: "code", example: "EMP-00001" },
@@ -134,7 +149,12 @@ const loginScreen = $("#login-screen");
 const appShell = $("#app-shell");
 const pageContent = $("#page-content");
 const entityDialog = $("#entity-dialog");
+const actionDialog = $("#action-dialog");
 const passwordDialog = $("#password-dialog");
+
+function syncPageDialogLock() {
+  document.body.classList.toggle("dialog-open", $$('dialog[open]').length > 0);
+}
 
 document.addEventListener("DOMContentLoaded", boot);
 
@@ -156,6 +176,11 @@ async function boot() {
 
 function bindGlobalEvents() {
   initLoginModuleCarousel();
+  $$('dialog').forEach((dialog) => {
+    new MutationObserver(syncPageDialogLock).observe(dialog, { attributes: true, attributeFilter: ["open"] });
+    dialog.addEventListener("close", syncPageDialogLock);
+  });
+  document.addEventListener("submit", guardFormSubmission, true);
   $("#login-form").addEventListener("submit", submitLogin);
   $("#password-form").addEventListener("submit", submitPasswordChange);
   $("#logout-button").addEventListener("click", logout);
@@ -175,6 +200,11 @@ function bindGlobalEvents() {
     navigate(button.dataset.view);
     $(".sidebar").classList.remove("open");
   });
+  const prepareRequestedModule = (event) => {
+    if (event.target.closest('[data-view="hr_control"]')) void prefetchHrControl();
+  };
+  $("#main-nav").addEventListener("pointerover", prepareRequestedModule);
+  $("#main-nav").addEventListener("focusin", prepareRequestedModule);
   $$('[data-peek]').forEach((button) => button.addEventListener("click", () => {
     const input = document.getElementById(button.dataset.peek);
     input.type = input.type === "password" ? "text" : "password";
@@ -184,9 +214,9 @@ function bindGlobalEvents() {
     button.setAttribute("aria-label", `${visible ? "Ocultar" : "Mostrar"} ${button.dataset.peekLabel || "contraseña"}`);
   }));
   entityDialog.addEventListener("click", (event) => {
-    if (event.target === entityDialog || event.target.closest("[data-close-modal]")) entityDialog.close();
+    if (event.target.closest("[data-close-modal]")) entityDialog.close();
   });
-  entityDialog.addEventListener("close", () => $("#entity-modal-content").classList.remove("wide", "compact", "hr-person-modal"));
+  entityDialog.addEventListener("close", () => $("#entity-modal-content").classList.remove("wide", "compact", "hr-person-modal", "hr-schedule-modal"));
   passwordDialog.addEventListener("cancel", (event) => {
     if (state.user?.mustChangePassword) event.preventDefault();
   });
@@ -259,6 +289,8 @@ async function submitLogin(event) {
 }
 
 function showLogin() {
+  apiGetCache.clear();
+  apiGetPending.clear();
   if (state.clockTimer) {
     clearInterval(state.clockTimer);
     state.clockTimer = null;
@@ -277,6 +309,76 @@ function showApplication() {
   renderNavigation();
   startHeaderClock();
   loadNotifications();
+}
+
+function confirmAction(options = {}) {
+  return openActionDialog({
+    eyebrow: options.eyebrow || "CONFIRMACIÓN REQUERIDA",
+    title: options.title || "Confirma esta acción",
+    message: options.message || "Revisa la información antes de continuar.",
+    confirmLabel: options.confirmLabel || "Confirmar",
+    cancelLabel: options.cancelLabel || "Cancelar",
+    tone: options.tone || "primary",
+  }).then(Boolean);
+}
+
+function requestActionText(options = {}) {
+  return openActionDialog({
+    eyebrow: options.eyebrow || "MOTIVO REQUERIDO",
+    title: options.title || "Captura el motivo",
+    message: options.message || "Esta información quedará registrada en el historial.",
+    confirmLabel: options.confirmLabel || "Guardar motivo",
+    cancelLabel: options.cancelLabel || "Cancelar",
+    tone: options.tone || "primary",
+    fieldLabel: options.fieldLabel || "Motivo",
+    placeholder: options.placeholder || "Describe brevemente el motivo…",
+    minLength: Number(options.minLength || 5),
+    initialValue: options.initialValue || "",
+  });
+}
+
+function openActionDialog(options) {
+  return new Promise((resolve) => {
+    const asksForText = Boolean(options.fieldLabel);
+    actionDialog.innerHTML = '<form class="modal-card compact action-dialog-card" method="dialog"><div class="action-dialog-symbol">' + (asksForText ? "✎" : "!") + '</div><span class="eyebrow">' + escapeHtml(options.eyebrow) + '</span><h2 id="action-dialog-title">' + escapeHtml(options.title) + '</h2><p class="muted">' + escapeHtml(options.message) + '</p>' +
+      (asksForText ? '<label class="action-dialog-field">' + escapeHtml(options.fieldLabel) + '<textarea name="actionValue" rows="4" minlength="' + options.minLength + '" placeholder="' + escapeAttribute(options.placeholder) + '" required>' + escapeHtml(options.initialValue) + '</textarea></label><p class="form-error hidden" role="alert"></p>' : "") +
+      '<div class="modal-actions"><button class="button ghost" type="button" data-action-cancel>' + escapeHtml(options.cancelLabel) + '</button><button class="button ' + (options.tone === "danger" ? "danger" : "primary") + '" type="submit">' + escapeHtml(options.confirmLabel) + '</button></div></form>';
+    const form = $("form", actionDialog), input = $('[name="actionValue"]', actionDialog);
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      actionDialog.onclick = null;
+      actionDialog.oncancel = null;
+      if (actionDialog.open) actionDialog.close();
+      resolve(value);
+    };
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!asksForText) return finish(true);
+      const value = input.value.trim();
+      if (value.length < options.minLength) {
+        const box = $(".form-error", form); box.textContent = "Captura al menos " + options.minLength + " caracteres."; box.classList.remove("hidden"); input.focus(); return;
+      }
+      finish(value);
+    });
+    $("[data-action-cancel]", actionDialog).addEventListener("click", () => finish(asksForText ? null : false));
+    actionDialog.oncancel = (event) => { event.preventDefault(); finish(asksForText ? null : false); };
+    actionDialog.onclick = (event) => { if (event.target === actionDialog) finish(asksForText ? null : false); };
+    actionDialog.showModal();
+    requestAnimationFrame(() => (input || $("button[type=submit]", form))?.focus());
+  });
+}
+
+async function prefetchHrControl() {
+  if (state.hrControl || state.user?.mustChangePassword || !hasPermission("hr.view")) return;
+  try {
+    const control = await api("/api/hr/control", { cacheTtlMs: HR_CONTROL_CACHE_MS });
+    state.hrControl = control;
+    state.hrOptions = control.options || state.hrOptions;
+  } catch {
+    // La navegación normal mostrará el error si RH realmente no está disponible.
+  }
 }
 
 function startHeaderClock() {
@@ -360,7 +462,7 @@ async function logout() {
 }
 
 async function navigate(view) {
-  const permission = masterHubViews.has(view) || masterUi[view] ? "masters.view" : inventoryViews.has(view) ? "inventory.view" : purchasesViews.has(view) ? "purchases.view" : salesViews.has(view) ? "sales.view" : productionViews.has(view) ? "production.view" : qualityViews.has(view) ? "quality.view" : maintenanceViews.has(view) ? "maintenance.view" : logisticsViews.has(view) ? "logistics.view" : financeViews.has(view) ? "finance.view" : tasksViews.has(view) ? "tasks.view" : safetyViews.has(view) ? "safety.view" : hrViews.has(view) ? "hr.view" : ({
+  const permission = masterHubViews.has(view) || masterUi[view] ? "masters.view" : inventoryViews.has(view) ? "inventory.view" : purchasesViews.has(view) ? "purchases.view" : salesViews.has(view) ? "sales.view" : productionViews.has(view) ? "production.view" : qualityViews.has(view) ? "quality.view" : maintenanceViews.has(view) ? "maintenance.view" : logisticsViews.has(view) ? "logistics.view" : financeViews.has(view) ? "finance.view" : tasksViews.has(view) ? "tasks.view" : safetyViews.has(view) ? "safety.view" : hrViews.has(view) ? "hr.view" : payrollViews.has(view) ? "payroll.view" : ({
     dashboard: "dashboard.view", users: "users.view", roles: "roles.view",
     areas: "areas.view", catalogs: "catalogs.view", folios: "folios.view", documents: "documents.view",
     notifications: "notifications.view", audit: "audit.view", settings: "settings.view",
@@ -397,6 +499,7 @@ async function navigate(view) {
     maintenance_history: ["Historial de equipos", "MANTENIMIENTO / HISTORIAL"],
     safety_control: ["Seguridad y salud", "SEGURIDAD Y SALUD / CONTROL INTEGRAL"],
     hr_control: ["Recursos humanos", "RECURSOS HUMANOS / CONTROL INTEGRAL"],
+    payroll_control: ["Nómina y CFDI", "RECURSOS HUMANOS / NÓMINA"],
     logistics_control: ["Mi logística", "LOGÍSTICA / CONTROL VISUAL"],
     logistics_preparation: ["Preparación de pedidos", "LOGÍSTICA / PREPARACIÓN"], logistics_picking: ["Picking", "LOGÍSTICA / PICKING"],
     logistics_packing: ["Packing", "LOGÍSTICA / PACKING"], logistics_routes: ["Rutas de entrega", "LOGÍSTICA / RUTAS"],
@@ -430,6 +533,7 @@ async function navigate(view) {
     else if (tasksViews.has(view)) await renderTasks(view);
     else if (safetyViews.has(view)) await renderSafety();
     else if (hrViews.has(view)) await renderHr();
+    else if (payrollViews.has(view)) await renderPayroll();
     else await ({ dashboard: renderDashboard, users: renderUsers, roles: renderRoles, areas: renderAreas, catalogs: renderCatalogs,
       folios: renderFolios, documents: renderDocuments, notifications: renderNotifications, audit: renderAudit, settings: renderSettings })[view]();
     pageContent.focus();
@@ -729,28 +833,58 @@ async function saveCatalogRecord(event, type, record) {
 }
 
 const masterHubConfig = {
+  organization_structure: { label: "Estructura", singular: "registro", symbol: "▦", description: "Empresas, centros de trabajo y departamentos", tone: "teal" },
   items: { label: "Artículos", singular: "artículo", symbol: "◆", description: "Productos, materiales y servicios", tone: "lime" },
   customers: { label: "Clientes", singular: "cliente", symbol: "◎", description: "Personas y empresas que compran", tone: "blue" },
   suppliers: { label: "Proveedores", singular: "proveedor", symbol: "◇", description: "Empresas que te venden", tone: "amber" },
+  areas: { label: "Áreas", singular: "área", symbol: "▦", description: "Estructura organizacional de Recursos Humanos", tone: "teal" },
   employees: { label: "Personal", singular: "persona", symbol: "♙", description: "Expedientes sincronizados desde Recursos Humanos", tone: "mint" },
   resources: { label: "Equipos", singular: "equipo", symbol: "⚒", description: "Máquinas, herramientas y recursos", tone: "steel" },
   price_lists: { label: "Precios", singular: "lista", symbol: "$", description: "Precios de venta y costos", tone: "gold" },
   maintenance_program: { label: "Programa anual", singular: "programa", symbol: "12", description: "Carga masiva de mantenimiento", tone: "teal" },
 };
 
+const masterHubModuleRequirements = {
+  items: ["inventory", "purchases", "sales", "production", "quality", "maintenance", "logistics"],
+  customers: ["sales", "logistics"],
+  suppliers: ["purchases", "maintenance"],
+  areas: ["hr", "payroll", "safety", "production", "quality", "maintenance"],
+  employees: ["hr", "payroll", "safety"],
+  resources: ["production", "quality", "maintenance"],
+  price_lists: ["sales", "purchases"],
+};
+
+function hasModuleAccess(moduleKey) {
+  return Boolean(state.user?.moduleAccess?.some((entry) => entry.key === moduleKey && Number(entry.level) > 0));
+}
+
+function availableMasterHubTypes() {
+  return Object.keys(masterUi).filter((type) => masterHubModuleRequirements[type].some(hasModuleAccess));
+}
+
 async function renderMasterHub() {
   const token = beginPageRender();
-  const types = Object.keys(masterUi);
-  const canViewMaintenance = hasPermission("maintenance.view");
-  const sections = canViewMaintenance ? [...types, "maintenance_program"] : types;
-  const responses = await Promise.all([api("/api/masters/options"), ...types.map((type) => api(`/api/masters/${type}`)), ...(canViewMaintenance ? [api("/api/maintenance/control")] : [])]);
+  const types = availableMasterHubTypes();
+  const canViewStructure = ["hr", "payroll", "safety"].some(hasModuleAccess) && hasPermission("hr.view");
+  const canViewMaintenance = hasModuleAccess("maintenance") && hasPermission("maintenance.view");
+  const sections = [...(canViewStructure ? ["organization_structure"] : []), ...types,
+    ...(canViewMaintenance ? ["maintenance_program"] : [])];
+  if (!sections.length) {
+    if (!renderIsCurrent(token)) return;
+    pageContent.innerHTML = `<section class="master-hub-topbar"><div><span class="eyebrow">INFORMACIÓN BASE DEL ERP</span><h2>Datos maestros</h2><p>Los catálogos se muestran según los módulos habilitados para esta empresa.</p></div></section>${emptyMarkup("Sin catálogos operativos", "Activa un módulo comercial, industrial o administrativo desde el Centro de Gestión.")}`;
+    return;
+  }
+  const responses = await Promise.all([api("/api/masters/options"), ...types.map((type) => api(type === "areas" ? "/api/areas" : `/api/masters/${type}`)),
+    ...(canViewStructure ? [api("/api/hr/structure")] : []), ...(canViewMaintenance ? [api("/api/maintenance/control")] : [])]);
   if (!renderIsCurrent(token)) return;
   state.masterOptions = responses[0];
-  types.forEach((type, index) => state.masterRecords[type] = responses[index + 1].records);
+  types.forEach((type, index) => state.masterRecords[type] = type === "areas" ? responses[index + 1].areas : responses[index + 1].records);
+  const structureControl = canViewStructure ? responses[types.length + 1] : null;
   const maintenanceControl = canViewMaintenance ? responses[responses.length - 1] : null;
-  const type = sections.includes(state.masterHubSection) ? state.masterHubSection : "items";
+  const type = sections.includes(state.masterHubSection) ? state.masterHubSection : sections[0];
   state.masterHubSection = type;
-  if (type === "maintenance_program") return renderMaintenanceProgramMaster(types, maintenanceControl);
+  if (type === "organization_structure") return renderOrganizationStructureMaster(sections, structureControl, maintenanceControl);
+  if (type === "maintenance_program") return renderMaintenanceProgramMaster(sections, maintenanceControl, structureControl);
   const config = masterHubConfig[type], definition = masterUi[type], records = state.masterRecords[type];
   const filter = state.masterFilter[type] ?? "all";
   const visible = filter === "all" || !definition.category ? records : records.filter((record) => record[definition.category] === filter);
@@ -758,12 +892,13 @@ async function renderMasterHub() {
   const categories = definition.categories ? new Set(records.map((record) => record[definition.category])).size : 1;
   const last = records[0]?.[definition.code] || "—";
   const employeeReadOnly = type === "employees";
+  const canManageCurrentMaster = type === "areas" ? hasPermission("areas.manage") : hasPermission("masters.manage");
   const commandAction = employeeReadOnly
-    ? (hasPermission("hr.view") ? '<button class="button master-create" data-open-hr><span>→</span> Ver Recursos Humanos</button>' : '<span class="master-readonly-note">Consulta sincronizada</span>')
-    : (hasPermission("masters.manage") ? `<button class="button master-create" id="new-master-hub"><span>＋</span> Nuevo ${escapeHtml(config.singular)}</button>` : "");
+    ? (hasPermission("hr.view") ? '<div class="master-command-actions">' + (hasPermission("hr.manage") || hasPermission("hr.approve") || hasPermission("areas.manage") ? '<button class="button master-create" data-open-hr-catalogs><span>＋</span> Áreas y puestos</button>' : "") + '<button class="button ghost light" data-open-hr><span>→</span> Ver personal</button></div>' : '<span class="master-readonly-note">Consulta sincronizada</span>')
+    : (canManageCurrentMaster ? `<button class="button master-create" id="new-master-hub"><span>＋</span> ${type === "areas" ? "Nueva" : "Nuevo"} ${escapeHtml(config.singular)}</button>` : "");
   const emptyDetail = employeeReadOnly ? "Registra al personal desde Recursos Humanos para consultarlo aquí." : `Crea el primer ${config.singular} para comenzar.`;
-  pageContent.innerHTML = `<section class="master-hub-topbar"><div><span class="eyebrow">INFORMACIÓN BASE DEL ERP</span><h2>Datos maestros</h2><p>Administra los datos que utilizan Compras, Ventas, Inventario y Producción.</p></div></section>
-    <section class="master-domain-switcher" aria-label="Tipo de dato">${sections.map((key) => key === "maintenance_program" ? maintenanceProgramDomainCard(maintenanceControl, key === type) : masterDomainCard(key, state.masterRecords[key], key === type)).join("")}</section>
+  pageContent.innerHTML = `<section class="master-hub-topbar"><div><span class="eyebrow">INFORMACIÓN BASE DEL ERP</span><h2>Datos maestros</h2><p>Catálogos relacionados con los módulos habilitados para esta empresa.</p></div></section>
+    <section class="master-domain-switcher" aria-label="Tipo de dato">${sections.map((key) => key === "organization_structure" ? organizationStructureDomainCard(structureControl, key === type) : key === "maintenance_program" ? maintenanceProgramDomainCard(maintenanceControl, key === type) : masterDomainCard(key, state.masterRecords[key], key === type)).join("")}</section>
     <section class="master-command">
       <div class="master-command-copy"><span class="master-live"><i></i> ${employeeReadOnly ? "CONECTADO CON RECURSOS HUMANOS" : "SECCIÓN ACTIVA"}</span><h3>${escapeHtml(config.label)}</h3><p>${escapeHtml(config.description)}.</p><div class="master-command-stats"><span><strong>${records.length}</strong><small>registros</small></span><span><strong>${active}</strong><small>activos</small></span></div>${commandAction}</div>
       ${masterDataScene(type, records)}
@@ -773,13 +908,17 @@ async function renderMasterHub() {
     ${definition.categories ? `<div class="master-hub-filters"><button class="${filter === "all" ? "active" : ""}" data-master-hub-filter="all">Todos <span>${records.length}</span></button>${Object.entries(definition.categories).map(([key, label]) => `<button class="${filter === key ? "active" : ""}" data-master-hub-filter="${key}">${escapeHtml(masterSimpleCategory(label))} <span>${records.filter((record) => record[definition.category] === key).length}</span></button>`).join("")}</div>` : ""}
     <div id="master-hub-records" class="master-record-grid">${visible.length ? visible.map((record) => masterHubRecordCard(type, record)).join("") : emptyMarkup(`No hay ${config.label.toLowerCase()}`, emptyDetail)}</div></section>`;
   $("#new-master-hub")?.addEventListener("click", () => openMasterModal(type));
-  pageContent.onclick = (event) => {
+  pageContent.onclick = async (event) => {
     const section = event.target.closest("[data-master-hub-section]");
     if (section) { state.masterHubSection = section.dataset.masterHubSection; state.masterHubQuery = ""; return navigate("masters_hub"); }
     const filterButton = event.target.closest("[data-master-hub-filter]");
     if (filterButton) { state.masterFilter[type] = filterButton.dataset.masterHubFilter; return renderMasterHub(); }
     const edit = event.target.closest("[data-edit-master-hub]");
     if (edit) return openMasterModal(type, records.find((record) => record.id === Number(edit.dataset.editMasterHub)));
+    if (event.target.closest("[data-open-hr-catalogs]")) {
+      const hrModule = await loadHrUiModule();
+      return hrModule.openCatalogs("areas");
+    }
     if (event.target.closest("[data-open-hr]")) return navigate("hr_control");
     const lines = event.target.closest("[data-price-lines]");
     if (lines) return openPriceListItems(records.find((record) => record.id === Number(lines.dataset.priceLines)));
@@ -800,14 +939,83 @@ function masterDomainCard(type, records, active) {
   return `<button class="master-domain ${config.tone} ${active ? "active" : ""}" data-master-hub-section="${type}"><span class="master-domain-icon">${config.symbol}<i></i></span><span><strong>${escapeHtml(config.label)}</strong><small>${escapeHtml(config.description)}</small></span><b>${records.length}</b><em>${enabled} activos</em></button>`;
 }
 
+function organizationStructureDomainCard(control, active) {
+  const records = [...(control?.companies || []), ...(control?.workCenters || []), ...(control?.departments || [])];
+  const config = masterHubConfig.organization_structure;
+  return `<button class="master-domain ${config.tone} ${active ? "active" : ""}" data-master-hub-section="organization_structure"><span class="master-domain-icon">${config.symbol}<i></i></span><span><strong>${config.label}</strong><small>${config.description}</small></span><b>${records.length}</b><em>${records.filter((record) => record.is_active).length} activos</em></button>`;
+}
+
+function organizationChartMarkup(companies, centers, departments) {
+  const company = companies[0];
+  if (!company) return `<section class="panel organization-chart-panel">${emptyMarkup("Sin estructura disponible", "La empresa aparecerá aquí cuando esté disponible.")}</section>`;
+  const departmentTree = (records) => {
+    if (!records.length) return '<div class="organization-chart-empty">Sin departamentos</div>';
+    const ids = new Set(records.map((row) => Number(row.id)));
+    const children = new Map();
+    records.forEach((row) => {
+      const parentId = ids.has(Number(row.parent_department_id)) ? Number(row.parent_department_id) : 0;
+      if (!children.has(parentId)) children.set(parentId, []);
+      children.get(parentId).push(row);
+    });
+    const visited = new Set();
+    const renderNodes = (parentId = 0) => (children.get(parentId) || []).map((row) => {
+      if (visited.has(Number(row.id))) return "";
+      visited.add(Number(row.id));
+      const descendants = renderNodes(Number(row.id));
+      return `<div class="organization-department-tree"><button type="button" class="organization-chart-node department" data-manage-organization-structure="departments"><span>DEPARTAMENTO</span><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.area_name || row.code || "Unidad organizativa")}</small></button>${descendants ? `<div class="organization-department-children">${descendants}</div>` : ""}</div>`;
+    }).join("");
+    const roots = renderNodes();
+    const orphans = records.filter((row) => !visited.has(Number(row.id))).map((row) => `<div class="organization-department-tree"><button type="button" class="organization-chart-node department" data-manage-organization-structure="departments"><span>DEPARTAMENTO</span><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.area_name || row.code || "Unidad organizativa")}</small></button></div>`).join("");
+    return roots + orphans;
+  };
+  const activeCenters = centers.filter((row) => Number(row.company_id) === Number(company.id));
+  const generalDepartments = departments.filter((row) => Number(row.company_id) === Number(company.id) && !row.work_center_id);
+  const branches = activeCenters.map((center) => {
+    const linked = departments.filter((row) => Number(row.work_center_id) === Number(center.id));
+    return `<article class="organization-chart-branch"><button type="button" class="organization-chart-node center" data-manage-organization-structure="work_centers"><span>${escapeHtml(organizationCenterLabel(center.center_type).toUpperCase())}</span><strong>${escapeHtml(center.name)}</strong><small>${linked.length} departamento(s)</small></button><div class="organization-chart-departments">${departmentTree(linked)}</div></article>`;
+  });
+  if (generalDepartments.length) branches.push(`<article class="organization-chart-branch general"><div class="organization-chart-node center"><span>ESTRUCTURA GENERAL</span><strong>Departamentos corporativos</strong><small>${generalDepartments.length} departamento(s)</small></div><div class="organization-chart-departments">${departmentTree(generalDepartments)}</div></article>`);
+  const branchEdge = branches.length > 1 ? `${50 / branches.length}%` : "50%";
+  return `<section class="panel organization-chart-panel"><div class="panel-title"><div><span class="eyebrow">ORGANIGRAMA</span><h3>Estructura actual</h3></div><span>${centers.length} centro(s) · ${departments.length} departamento(s)</span></div><div class="organization-chart" aria-label="Organigrama de la empresa"><button type="button" class="organization-chart-node company" data-manage-organization-structure="companies"><span>EMPRESA</span><strong>${escapeHtml(company.trade_name || company.legal_name)}</strong><small>${escapeHtml(company.code || company.legal_name)}</small></button>${branches.length ? `<div class="organization-chart-trunk" aria-hidden="true"></div><div class="organization-chart-branches" style="--branch-edge:${branchEdge}">${branches.join("")}</div>` : '<div class="organization-chart-empty main">Aún no hay centros ni departamentos.</div>'}</div></section>`;
+}
+
+function organizationCenterLabel(type) {
+  return ({ plant: "Planta", branch: "Sucursal", work_center: "Centro de trabajo", office: "Oficina", other: "Otro" })[type] || "Centro de trabajo";
+}
+
+function renderOrganizationStructureMaster(sections, control, maintenanceControl) {
+  const companies = control?.companies || [], centers = control?.workCenters || [], departments = control?.departments || [];
+  const total = companies.length + centers.length + departments.length;
+  pageContent.innerHTML = `<section class="master-hub-topbar"><div><span class="eyebrow">INFORMACIÓN BASE DEL ERP</span><h2>Datos maestros</h2><p>Catálogos generales compartidos por los módulos habilitados para esta empresa.</p></div></section>
+    <section class="master-domain-switcher" aria-label="Tipo de dato">${sections.map((key) => key === "organization_structure" ? organizationStructureDomainCard(control, true) : key === "maintenance_program" ? maintenanceProgramDomainCard(maintenanceControl, false) : masterDomainCard(key, state.masterRecords[key], false)).join("")}</section>
+    <section class="master-command organization-command">
+      <div class="master-command-copy"><span class="master-live"><i></i> ESTRUCTURA COMPARTIDA</span><h3>Organización de la empresa</h3><p>La empresa proviene del Centro de Gestión. Aquí se agregan únicamente sus centros de trabajo y departamentos para alimentar los expedientes laborales.</p><div class="master-command-stats"><span><strong>${total}</strong><small>registros</small></span><span><strong>${companies.filter((row) => row.is_active).length}</strong><small>empresa administrada</small></span></div>${hasPermission("hr.manage") ? '<button class="button master-create" data-manage-organization-structure="companies"><span>→</span> Consultar estructura</button>' : ""}</div>
+      <div class="organization-structure-scene" aria-label="Flujo de estructura organizacional"><article><span>01</span><strong>Empresa</strong><small>Entidad legal</small></article><i>→</i><article><span>02</span><strong>Centro</strong><small>Planta o ubicación</small></article><i>→</i><article><span>03</span><strong>Departamento</strong><small>Unidad de trabajo</small></article></div>
+    </section>
+    <section class="master-vitals organization-vitals">
+      <button data-manage-organization-structure="companies"><span>Empresa</span><strong>${companies.length}</strong><small>Identidad principal</small></button>
+      <button data-manage-organization-structure="work_centers"><span>Centros de trabajo</span><strong>${centers.length}</strong><small>Plantas, oficinas y ubicaciones</small></button>
+      <button data-manage-organization-structure="departments"><span>Departamentos</span><strong>${departments.length}</strong><small>Equipos y unidades organizativas</small></button>
+    </section>
+    ${organizationChartMarkup(companies, centers, departments)}`;
+  pageContent.onclick = async (event) => {
+    const section = event.target.closest("[data-master-hub-section]");
+    if (section) { state.masterHubSection = section.dataset.masterHubSection; state.masterHubQuery = ""; return navigate("masters_hub"); }
+    const manage = event.target.closest("[data-manage-organization-structure]");
+    if (manage) {
+      const hrModule = await loadHrUiModule();
+      return hrModule.openStructure(manage.dataset.manageOrganizationStructure || "companies");
+    }
+  };
+}
+
 function maintenanceProgramDomainCard(control, active) {
   const imports = control?.programImports || [];
   const plans = control?.plans?.filter((plan) => plan.import_id) || [];
   return `<button class="master-domain teal ${active ? "active" : ""}" data-master-hub-section="maintenance_program"><span class="master-domain-icon">12<i></i></span><span><strong>Programa anual</strong><small>Carga masiva de mantenimiento</small></span><b>${imports.length}</b><em>${plans.length} planes</em></button>`;
 }
 
-function renderMaintenanceProgramMaster(types, control) {
-  const sections = [...types, "maintenance_program"];
+function renderMaintenanceProgramMaster(sections, control, structureControl) {
   const imports = control.programImports || [];
   const importedPlans = control.plans.filter((plan) => plan.import_id);
   const year = new Date().getFullYear();
@@ -815,7 +1023,7 @@ function renderMaintenanceProgramMaster(types, control) {
   const totalDates = imports.reduce((sum, item) => sum + Number(item.schedule_count || 0), 0);
   const latest = imports[0];
   pageContent.innerHTML = `<section class="master-hub-topbar"><div><span class="eyebrow">INFORMACIÓN BASE DEL ERP</span><h2>Datos maestros</h2><p>Administra los datos que utilizan Compras, Ventas, Inventario, Producción y Mantenimiento.</p></div></section>
-    <section class="master-domain-switcher" aria-label="Tipo de dato">${sections.map((key) => key === "maintenance_program" ? maintenanceProgramDomainCard(control, true) : masterDomainCard(key, state.masterRecords[key], false)).join("")}</section>
+    <section class="master-domain-switcher" aria-label="Tipo de dato">${sections.map((key) => key === "organization_structure" ? organizationStructureDomainCard(structureControl, false) : key === "maintenance_program" ? maintenanceProgramDomainCard(control, true) : masterDomainCard(key, state.masterRecords[key], false)).join("")}</section>
     <section class="maintenance-import-command">
       <div class="maintenance-import-copy">
         <span class="master-live"><i></i> CARGA CENTRALIZADA</span>
@@ -983,9 +1191,10 @@ function masterHubRecordCard(type, record) {
     ? `<img class="master-employee-photo" src="${API_BASE}/api/hr/people/${record.id}/photo" alt="Fotografía de ${escapeAttribute(name)}" />`
     : `<div class="master-record-symbol">${config.symbol}</div>`;
   const status = record.status === "leave" ? "Ausente" : info.active ? "Activo" : "Inactivo";
+  const canManageRecord = type === "areas" ? hasPermission("areas.manage") : hasPermission("masters.manage");
   const action = type === "employees"
     ? (hasPermission("hr.view") ? '<button class="button ghost small" data-open-hr>Ver en RH</button>' : "")
-    : `${definition.lines ? `<button class="link-button" data-price-lines="${record.id}">Ver precios</button>` : ""}${hasPermission("masters.manage") ? `<button class="button ghost small" data-edit-master-hub="${record.id}">Editar</button>` : ""}`;
+    : `${definition.lines ? `<button class="link-button" data-price-lines="${record.id}">Ver precios</button>` : ""}${canManageRecord ? `<button class="button ghost small" data-edit-master-hub="${record.id}">Editar</button>` : ""}`;
   return `<article class="master-record-card ${config.tone}" data-search="${escapeAttribute(search)}">${symbol}<div class="master-record-main"><span>${escapeHtml(code)}</span><h4>${escapeHtml(name)}</h4>${info.secondary ? `<p>${escapeHtml(info.secondary)}</p>` : ""}<small>${escapeHtml(info.operational)}</small></div><div class="master-record-meta"><span class="chip">${escapeHtml(masterSimpleCategory(info.category))}</span><span class="badge ${info.active ? "" : "warn"}">● ${status}</span></div><div class="master-record-actions">${action}</div></article>`;
 }
 
@@ -1053,6 +1262,7 @@ function masterRow(type, record) {
 
 function openMasterModal(type, record = null) {
   if (type === "employees") return navigate("hr_control");
+  if (type === "areas") return openAreaModal(record);
   const definition = masterUi[type];
   const automatic = automaticMasterCodes[type];
   $("#entity-modal-content").innerHTML = `<form id="master-form"><div class="modal-head"><div><span class="eyebrow">DATOS MAESTROS</span><h2>${record ? `Editar ${escapeHtml(definition.singular.toLowerCase())}` : `Nuevo ${escapeHtml(definition.singular.toLowerCase())}`}</h2><p class="muted">La información quedará disponible para los módulos operativos autorizados.</p></div><button type="button" data-close-modal>×</button></div>${automaticCodeBanner(record?.[automatic.field] ?? automatic.example, !record)}<div class="form-grid master-form-grid">${definition.fields.filter(([name]) => name !== automatic.field).map((field) => masterField(field, record)).join("")}</div><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar registro</button></div></form>`;
@@ -1119,7 +1329,7 @@ async function openPriceListItems(priceList, editingLine = null) {
     const edit = event.target.closest("[data-edit-price-line]");
     if (edit) return openPriceListItems(priceList, result.items.find((line) => line.id === Number(edit.dataset.editPriceLine)));
     const remove = event.target.closest("[data-delete-price-line]");
-    if (remove && confirm("¿Eliminar esta partida de la lista?")) {
+    if (remove && await confirmAction({ eyebrow: "LISTA DE PRECIOS", title: "Eliminar partida", message: "La partida dejará de formar parte de esta lista.", confirmLabel: "Sí, eliminar", tone: "danger" })) {
       try { await api(`/api/price-lists/${priceList.id}/items/${remove.dataset.deletePriceLine}`, { method: "DELETE" }); toast("Partida eliminada."); await openPriceListItems(priceList); }
       catch (error) { toast(error.message, "error"); }
     }
@@ -1718,7 +1928,7 @@ function productionOrderButtons(row) {
 }
 
 async function handleProductionAction(id, action) {
-  if (["complete", "close"].includes(action) && !confirm(action === "close" ? "¿Cerrar definitivamente esta orden?" : "¿Marcar la producción como terminada?")) return;
+  if (["complete", "close"].includes(action) && !await confirmAction({ eyebrow: "ORDEN DE PRODUCCIÓN", title: action === "close" ? "Cerrar definitivamente la orden" : "Terminar la producción", message: action === "close" ? "La orden quedará cerrada y ya no admitirá movimientos operativos." : "Se marcará la ejecución como terminada para continuar con el cierre.", confirmLabel: action === "close" ? "Cerrar orden" : "Terminar producción", tone: action === "close" ? "danger" : "primary" })) return;
   try { const result = await api("/api/production/orders/" + id + "/action", { method: "POST", body: { action } }); state.productionOptions = null; toast(result.folio + " actualizada."); await navigate("production_control"); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -1922,7 +2132,7 @@ function openQualityCorrectiveModal(nonconformityId = null) {
 }
 
 async function updateQualityAction(id, status) {
-  const verification = status === "closed" ? prompt("Describe brevemente cómo se verificó la acción:") : "";
+  const verification = status === "closed" ? await requestActionText({ eyebrow: "CONTROL DE CALIDAD", title: "Verificación de la acción", message: "Describe cómo comprobaste que la acción correctiva fue efectiva.", fieldLabel: "Evidencia de verificación", confirmLabel: "Cerrar acción" }) : "";
   if (status === "closed" && verification == null) return;
   try { await api("/api/quality/corrective-actions/" + id, { method: "PATCH", body: { status, verification } }); toast("Acción correctiva actualizada."); await navigate("quality_control"); }
   catch (error) { toast(error.message, "error"); }
@@ -2240,7 +2450,7 @@ async function handleMaintenanceAction(id, action) {
     try { await api("/api/maintenance/orders/" + id + "/action", { method: "POST", body: { action } }); toast("Paro terminado."); await navigate(state.currentView); } catch (error) { toast(error.message, "error"); }
     return;
   }
-  if (action === "close" && !confirm("¿Cerrar definitivamente esta orden de mantenimiento?")) return;
+  if (action === "close" && !await confirmAction({ eyebrow: "MANTENIMIENTO", title: "Cerrar orden de mantenimiento", message: "El cierre será definitivo y conservará el historial de trabajos y costos.", confirmLabel: "Cerrar orden", tone: "danger" })) return;
   try { const result = await api("/api/maintenance/orders/" + id + "/action", { method: "POST", body: { action } }); toast(result.folio + " actualizada."); await navigate(state.currentView); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -2514,7 +2724,7 @@ function bindLogisticsActionForm(selector, id, action, message) {
 }
 
 async function runLogisticsAction(id, action) {
-  if (action === "dispatch" && !confirm("¿Confirmas que el embarque sale a ruta?")) return;
+  if (action === "dispatch" && !await confirmAction({ eyebrow: "LOGÍSTICA", title: "Enviar embarque a ruta", message: "El embarque cambiará a tránsito y quedará visible para el seguimiento de entrega.", confirmLabel: "Confirmar salida" })) return;
   try { await api("/api/logistics/shipments/" + id + "/action", { method: "POST", body: { action } }); state.logisticsOptions = null; toast("Embarque actualizado."); await navigate(state.currentView); } catch (error) { toast(error.message, "error"); }
 }
 
@@ -2698,7 +2908,7 @@ function openFinanceReconcileModal(id, difference) {
 }
 
 async function runFinanceBudgetAction(id, action) {
-  if (action === "close" && !confirm("¿Cerrar este presupuesto?")) return;
+  if (action === "close" && !await confirmAction({ eyebrow: "FINANZAS", title: "Cerrar presupuesto", message: "El presupuesto quedará cerrado para nuevos movimientos.", confirmLabel: "Cerrar presupuesto", tone: "danger" })) return;
   try { await api("/api/finance/budgets/" + id + "/action", { method: "POST", body: { action } }); toast("Presupuesto actualizado."); await navigate(state.currentView); } catch (error) { toast(error.message, "error"); }
 }
 
@@ -3164,7 +3374,7 @@ function purchaseLinesTable(lines, type) {
 }
 
 async function runPurchaseRequestAction(id, action) {
-  if (action === "reject" && !confirm("¿Rechazar esta solicitud de compra?")) return;
+  if (action === "reject" && !await confirmAction({ eyebrow: "COMPRAS", title: "Rechazar solicitud", message: "La solicitud quedará rechazada y conservará esta decisión en su historial.", confirmLabel: "Rechazar solicitud", tone: "danger" })) return;
   try { await api("/api/purchases/requests/" + id + "/action", { method: "POST", body: { action } }); state.purchasesOptions = null; toast("Solicitud actualizada."); await navigate(state.currentView); } catch (error) { toast(error.message, "error"); }
 }
 
@@ -3212,33 +3422,152 @@ async function renderDocuments() {
   const token = beginPageRender();
   const result = await api("/api/documents");
   if (!renderIsCurrent(token)) return;
-  pageContent.innerHTML = `<section class="page-lead"><div><span class="eyebrow">REPOSITORIO LOCAL</span><h2>Archivos y documentos</h2><p>Centraliza evidencias, formatos y adjuntos vinculados a los módulos del ERP.</p></div>${hasPermission("documents.manage") ? '<button id="upload-document" class="button primary">↑ Cargar archivo</button>' : ""}</section>
+  state.documentOptions = result;
+  pageContent.innerHTML = `<section class="page-lead"><div><span class="eyebrow">EXPEDIENTE DOCUMENTAL</span><h2>Archivos y documentos</h2><p>Conserva versiones, vencimientos y archivos sensibles vinculados a cada colaborador.</p></div>${hasPermission("documents.manage") ? '<button id="upload-document" class="button primary">↑ Cargar archivo</button>' : ""}</section>
     <section class="document-summary"><div><strong>${result.documents.length}</strong><span>Documentos registrados</span></div><div><strong>${formatBytes(result.documents.reduce((sum, item) => sum + Number(item.size_bytes), 0))}</strong><span>Almacenamiento utilizado</span></div><div><strong>8 MB</strong><span>Límite por archivo</span></div></section>
-    <div class="table-wrap"><table><thead><tr><th>Archivo</th><th>Módulo</th><th>Referencia</th><th>Tamaño</th><th>Cargado por</th><th></th></tr></thead><tbody>${result.documents.length ? result.documents.map((document) => `<tr><td><strong>${escapeHtml(document.original_name)}</strong><small>${formatDate(document.created_at)}</small></td><td><span class="chip">${escapeHtml(document.module)}</span></td><td>${escapeHtml([document.entity_type, document.entity_id].filter(Boolean).join(" #") || "General")}</td><td>${formatBytes(document.size_bytes)}</td><td>${escapeHtml(document.uploaded_by_name || "Sistema")}</td><td><div class="table-actions"><a class="link-button text-link" href="${API_BASE}/api/documents/${document.id}/download">Descargar</a>${hasPermission("documents.manage") ? `<button class="link-button danger-link" data-delete-document="${document.id}">Eliminar</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="6">${emptyMarkup("No hay documentos", "Carga el primer archivo del repositorio local.")}</td></tr>`}</tbody></table></div>`;
+    <div class="table-wrap"><table><thead><tr><th>Archivo</th><th>Colaborador</th><th>Clasificación</th><th>Versión</th><th>Vigencia</th><th></th></tr></thead><tbody>${result.documents.length ? result.documents.map((document) => `<tr class="${document.is_current ? "" : "muted-row"}"><td><strong>${escapeHtml(document.original_name)}</strong><small>${formatDate(document.created_at)} · ${formatBytes(document.size_bytes)}</small></td><td>${document.employee_name ? `<strong>${escapeHtml(document.employee_name)}</strong><small>${escapeHtml(document.employee_number || "")}</small>` : "Documento general"}</td><td><span class="chip">${escapeHtml(document.document_type_name || document.module)}</span><small>${documentSensitivityLabel(document.sensitivity)}</small></td><td><strong>v${Number(document.version_number || 1)}</strong><small>${document.is_current ? "Vigente" : "Sustituida"}</small></td><td>${document.expiry_date ? `<strong>${formatDate(document.expiry_date)}</strong><small>${documentExpiryLabel(document.expiry_date)}</small>` : "Sin vencimiento"}</td><td><div class="table-actions"><button class="link-button" data-view-document="${document.id}">Ver ficha</button><a class="link-button text-link" href="${API_BASE}/api/documents/${document.id}/download">Descargar</a>${hasPermission("documents.manage") ? `<button class="link-button danger-link" data-delete-document="${document.id}">Eliminar</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="6">${emptyMarkup("No hay documentos", "Carga el primer archivo del expediente documental.")}</td></tr>`}</tbody></table></div>`;
   $("#upload-document")?.addEventListener("click", openDocumentModal);
   pageContent.onclick = async (event) => {
+    const view = event.target.closest("[data-view-document]");
+    if (view) return openDocumentDetail(view.dataset.viewDocument);
     const button = event.target.closest("[data-delete-document]");
-    if (!button || !confirm("¿Eliminar este documento? Esta acción también quitará el archivo local.")) return;
+    if (!button || !await confirmAction({ eyebrow: "EXPEDIENTE DOCUMENTAL", title: "Eliminar documento", message: "Si es la versión vigente, el sistema restaurará automáticamente la versión anterior.", confirmLabel: "Eliminar documento", tone: "danger" })) return;
     try { await api(`/api/documents/${button.dataset.deleteDocument}`, { method: "DELETE" }); toast("Documento eliminado."); if (state.currentView === "documents") await renderDocuments(); }
     catch (error) { toast(error.message, "error"); }
   };
 }
 
+function guardFormSubmission(event) {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || guardedFormExclusions.has(form.id) || form.dataset.submitFeedback === "off") return;
+  if (form.dataset.submitting === "true") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+  const submitter = event.submitter || $("button[type='submit']:not(:disabled), input[type='submit']:not(:disabled)", form);
+  if (!submitter) return;
+  const buttons = $$('button[type="submit"], input[type="submit"]', form);
+  const originalLabel = String(submitter.textContent || submitter.value || "").trim();
+  const savingAction = /guardar|agregar|crear|registrar|actualizar|confirmar|cargar|aplicar/i.test(originalLabel);
+  const progressLabel = savingAction ? "Guardando…" : "Procesando…";
+  const notice = document.createElement("div");
+  notice.className = "form-save-progress";
+  notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  notice.innerHTML = '<span class="form-save-spinner" aria-hidden="true"></span><span><strong>' + progressLabel + '</strong><small>Espera a que termine la operación. No es necesario volver a presionar.</small></span>';
+  const actions = $(".modal-actions", form);
+  if (actions) actions.insertAdjacentElement("beforebegin", notice);
+  else submitter.insertAdjacentElement("beforebegin", notice);
+  const submission = {
+    form,
+    notice,
+    submitter,
+    buttons: buttons.map((button) => ({ button, disabled: button.disabled, html: button instanceof HTMLButtonElement ? button.innerHTML : null, value: button.value })),
+    claimed: false,
+    activeRequests: 0,
+    releaseTimer: null,
+    fallbackTimer: null,
+  };
+  form.dataset.submitting = "true";
+  form.setAttribute("aria-busy", "true");
+  buttons.forEach((button) => { button.disabled = true; });
+  submitter.classList.add("is-saving");
+  if (submitter instanceof HTMLButtonElement) submitter.textContent = progressLabel;
+  else submitter.value = progressLabel;
+  submission.fallbackTimer = setTimeout(() => {
+    if (!submission.claimed) finishGuardedFormSubmission(submission);
+  }, 30_000);
+  guardedFormSubmissions.push(submission);
+}
+
+function claimGuardedFormSubmission(method) {
+  const submission = [...guardedFormSubmissions].reverse().find((entry) => entry.form.isConnected && (entry.claimed || !["GET", "HEAD"].includes(method)));
+  if (!submission) return null;
+  submission.claimed = true;
+  clearTimeout(submission.fallbackTimer);
+  clearTimeout(submission.releaseTimer);
+  submission.activeRequests += 1;
+  return submission;
+}
+
+function releaseGuardedFormSubmission(submission) {
+  if (!submission) return;
+  submission.activeRequests = Math.max(0, submission.activeRequests - 1);
+  if (submission.activeRequests > 0) return;
+  clearTimeout(submission.releaseTimer);
+  submission.releaseTimer = setTimeout(() => finishGuardedFormSubmission(submission), 180);
+}
+
+function finishGuardedFormSubmission(submission) {
+  const index = guardedFormSubmissions.indexOf(submission);
+  if (index >= 0) guardedFormSubmissions.splice(index, 1);
+  clearTimeout(submission.fallbackTimer);
+  clearTimeout(submission.releaseTimer);
+  submission.form.removeAttribute("aria-busy");
+  delete submission.form.dataset.submitting;
+  submission.notice.remove();
+  submission.buttons.forEach(({ button, disabled, html, value }) => {
+    button.disabled = disabled;
+    button.classList.remove("is-saving");
+    if (button instanceof HTMLButtonElement) button.innerHTML = html;
+    else button.value = value;
+  });
+}
+
 function openDocumentModal() {
-  $("#entity-modal-content").innerHTML = `<form id="document-form"><div class="modal-head"><div><span class="eyebrow">NUEVO DOCUMENTO</span><h2>Cargar archivo</h2><p class="muted">El archivo se guardará en el almacenamiento local y sus datos en SQLite.</p></div><button type="button" data-close-modal>×</button></div><label>Archivo<input name="file" type="file" required /></label><div class="form-grid"><label>Módulo<input name="module" value="core" placeholder="compras" required /></label><label>Tipo de referencia<input name="entityType" placeholder="orden_compra" /></label><label>ID de referencia<input name="entityId" placeholder="125" /></label><label>Descripción<input name="description" placeholder="Documento firmado" /></label></div><p class="upload-note">Tamaño máximo: 8 MB por archivo.</p><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Cargar documento</button></div></form>`;
-  $("#document-form").addEventListener("submit", async (event) => {
+  const options = state.documentOptions || { documentTypes: [], employees: [] };
+  const employeeOptions = '<option value="">Documento general</option>' + (options.employees || []).map((row) => `<option value="${row.id}">${escapeHtml(row.employee_number)} · ${escapeHtml(row.full_name)}</option>`).join("");
+  const typeOptions = '<option value="">Sin clasificación laboral</option>' + (options.documentTypes || []).map((row) => `<option value="${row.id}" data-sensitive="${escapeAttribute(row.sensitivity)}" data-issue="${row.requires_issue_date}" data-expiry="${row.requires_expiry_date}">${escapeHtml(row.name)}</option>`).join("");
+  $("#entity-modal-content").innerHTML = `<form id="document-form"><div class="modal-head"><div><span class="eyebrow">NUEVO DOCUMENTO</span><h2>Cargar archivo</h2><p class="muted">Si ya existe un archivo de la misma clase para el colaborador, se conservará como una versión anterior.</p></div><button type="button" data-close-modal>×</button></div><label>Archivo<input name="file" type="file" required /></label><div class="form-grid"><label>Colaborador<select name="employeeId" id="document-employee">${employeeOptions}</select></label><label>Clasificación<select name="documentTypeId" id="document-type">${typeOptions}</select><small class="field-help" id="document-sensitivity-help">Documento general sin clasificación sensible.</small></label><label>Fecha de emisión<input name="issueDate" type="date" /></label><label>Fecha de vencimiento<input name="expiryDate" type="date" /></label><label>Módulo<input name="module" value="core" placeholder="recursos_humanos" required /></label><label>Tipo de referencia<input name="entityType" placeholder="expediente_empleado" /></label><label>ID de referencia<input name="entityId" placeholder="125" /></label><label>Descripción<input name="description" placeholder="Documento firmado" /></label></div><p class="upload-note">Tamaño máximo: 8 MB por archivo. La clasificación define automáticamente sus permisos.</p><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Cargar documento</button></div></form>`;
+  const form = $("#document-form"), employeeSelect = $("#document-employee"), typeSelect = $("#document-type");
+  const syncDocumentRules = () => {
+    const option = typeSelect.selectedOptions[0];
+    typeSelect.required = Boolean(employeeSelect.value);
+    form.module.value = employeeSelect.value ? "hr" : (form.module.value || "core");
+    form.entityType.value = employeeSelect.value ? "employee" : form.entityType.value;
+    form.entityId.value = employeeSelect.value || form.entityId.value;
+    form.issueDate.required = option?.dataset.issue === "1";
+    form.expiryDate.required = option?.dataset.expiry === "1";
+    $("#document-sensitivity-help").textContent = option?.value
+      ? "Acceso: " + documentSensitivityLabel(option.dataset.sensitive) : "Documento general sin clasificación sensible.";
+  };
+  employeeSelect.onchange = syncDocumentRules;
+  typeSelect.onchange = syncDocumentRules;
+  syncDocumentRules();
+  form.addEventListener("submit", async (event) => {
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const file = data.get("file"); const box = $(".form-error", form); const submit = $("button[type=submit]", form);
     if (!(file instanceof File) || !file.size) { box.textContent = "Selecciona un archivo."; return box.classList.remove("hidden"); }
     if (file.size > 8 * 1024 * 1024) { box.textContent = "El archivo supera el límite de 8 MB."; return box.classList.remove("hidden"); }
     submit.disabled = true;
     try {
       const contentBase64 = await fileToBase64(file);
-      await api("/api/documents", { method: "POST", body: { originalName: file.name, mimeType: file.type || "application/octet-stream", contentBase64, module: data.get("module"), entityType: data.get("entityType"), entityId: data.get("entityId"), description: data.get("description") } });
+      await api("/api/documents", { method: "POST", body: { originalName: file.name, mimeType: file.type || "application/octet-stream", contentBase64, module: data.get("module"), entityType: data.get("entityType"), entityId: data.get("entityId"), employeeId: data.get("employeeId"), documentTypeId: data.get("documentTypeId"), issueDate: data.get("issueDate"), expiryDate: data.get("expiryDate"), description: data.get("description") } });
       entityDialog.close(); toast("Documento cargado correctamente."); await renderDocuments();
     } catch (error) { box.textContent = error.message; box.classList.remove("hidden"); }
     finally { submit.disabled = false; }
   });
   entityDialog.showModal();
+}
+
+async function openDocumentDetail(id) {
+  try {
+    const { document, accessLog = [] } = await api(`/api/documents/${id}`);
+    const accessMarkup = accessLog.length ? `<section class="document-access-log"><div class="panel-head"><div><h3>Bitácora de acceso</h3><p>Consultas y descargas registradas.</p></div><span>${accessLog.length} EVENTO(S)</span></div>${accessLog.map((entry) => `<div><strong>${entry.action === "download" ? "Descarga" : "Consulta"}</strong><span>${escapeHtml(entry.user_name || "Usuario retirado")}</span><small>${formatDate(entry.created_at)} · ${escapeHtml(entry.ip_address || "Sin IP")}</small></div>`).join("")}</section>` : "";
+    $("#entity-modal-content").innerHTML = `<section><div class="modal-head"><div><span class="eyebrow">FICHA DOCUMENTAL</span><h2>${escapeHtml(document.original_name)}</h2><p class="muted">La consulta quedó registrada en la bitácora de seguridad.</p></div><button type="button" data-close-modal>×</button></div><div class="detail-grid"><div><span>Colaborador</span><strong>${escapeHtml(document.employee_name || "Documento general")}</strong></div><div><span>Clasificación</span><strong>${escapeHtml(document.document_type_name || "General")}</strong></div><div><span>Sensibilidad</span><strong>${documentSensitivityLabel(document.sensitivity)}</strong></div><div><span>Versión</span><strong>v${Number(document.version_number || 1)} · ${document.is_current ? "Vigente" : "Sustituida"}</strong></div><div><span>Emisión</span><strong>${document.issue_date ? formatDate(document.issue_date) : "Sin fecha"}</strong></div><div><span>Vencimiento</span><strong>${document.expiry_date ? formatDate(document.expiry_date) : "Sin vencimiento"}</strong></div><div><span>Cargado por</span><strong>${escapeHtml(document.uploaded_by_name || "Sistema")}</strong></div><div><span>Tamaño</span><strong>${formatBytes(document.size_bytes)}</strong></div></div><p>${escapeHtml(document.description || "Sin descripción")}</p>${accessMarkup}<div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cerrar</button><a class="button primary" href="${API_BASE}/api/documents/${document.id}/download">Descargar</a></div></section>`;
+    entityDialog.showModal();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function documentSensitivityLabel(value) {
+  return ({ standard: "General", fiscal: "Fiscal", salary: "Salarial restringido", cfdi: "CFDI restringido", medical: "Médico restringido" })[value] || value || "General";
+}
+
+function documentExpiryLabel(date) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (date < today) return "Vencido";
+  const days = Math.ceil((new Date(`${date}T00:00:00Z`) - new Date(`${today}T00:00:00Z`)) / 86400000);
+  return days <= 90 ? `Vence en ${days} día(s)` : "Vigente";
 }
 
 async function renderNotifications() {
@@ -3306,7 +3635,12 @@ async function saveArea(event, area) {
     await api(area ? `/api/areas/${area.id}` : "/api/areas", { method: area ? "PATCH" : "POST", body });
     entityDialog.close();
     toast(area ? "Área actualizada." : "Área creada.");
-    await renderAreas();
+    if (state.currentView === "masters_hub") {
+      state.masterHubSection = "areas";
+      await renderMasterHub();
+    } else {
+      await renderAreas();
+    }
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.classList.remove("hidden");
@@ -3370,7 +3704,9 @@ async function renderSettings() {
       (hasPermission("audit.view") ? '<button class="button ghost wide" type="button" data-open-system-audit><span>Abrir bitácora completa</span><span>→</span></button>' : "") + '</aside></section>';
   } else {
     const { settings } = result;
-    pageContent.innerHTML = header + `<section class="settings-grid"><aside class="settings-aside"><span class="eyebrow light">CONFIGURACIÓN LOCAL</span><h3>Los datos permanecen bajo tu control.</h3><p>Esta instalación utiliza una base SQLite interna. Los cambios se guardan en el servidor local y quedan registrados en la bitácora.</p></aside><form id="settings-form" class="panel settings-form"><label>Nombre de la empresa<input name="company_name" value="${escapeAttribute(settings.company_name.value)}" required /></label><label>Zona horaria<select name="timezone" required>${predefinedTimezoneOptions(settings.timezone.value)}</select></label><label>Duración de sesión (horas)<input name="session_hours" type="number" min="1" max="72" value="${escapeAttribute(settings.session_hours.value)}" required /></label><p class="form-error hidden"></p>${hasPermission("settings.manage") ? '<button class="button primary" type="submit">Guardar configuración</button>' : ""}</form></section>`;
+    const managedCompany = result.managedCompany || state.company || {};
+    const managedName = managedCompany.tradeName || managedCompany.legalName || settings.company_name?.value || "Empresa administrada";
+    pageContent.innerHTML = header + `<section class="settings-grid"><aside class="settings-aside"><span class="eyebrow light">CONFIGURACIÓN DEL ENTORNO</span><h3>Una identidad, una base empresarial.</h3><p>El nombre y la identidad de esta empresa se administran exclusivamente desde el Centro de Gestión. Aquí sólo se ajusta el comportamiento operativo del ERP.</p></aside><form id="settings-form" class="panel settings-form"><div class="managed-company-field"><span>EMPRESA ADMINISTRADA</span><div><strong>${escapeHtml(managedName)}</strong><small>${escapeHtml(managedCompany.legalName || managedName)}${managedCompany.code ? " · " + escapeHtml(managedCompany.code) : ""}</small></div></div><label>Zona horaria<select name="timezone" required>${predefinedTimezoneOptions(settings.timezone.value)}</select></label><label>Duración de sesión (horas)<input name="session_hours" type="number" min="1" max="72" value="${escapeAttribute(settings.session_hours.value)}" required /></label><p class="form-error hidden"></p>${hasPermission("settings.manage") ? '<button class="button primary" type="submit">Guardar configuración operativa</button>' : ""}</form></section>`;
   }
   pageContent.onclick = (event) => {
     const tab = event.target.closest("[data-settings-section]");
@@ -3391,30 +3727,71 @@ async function renderSettings() {
 
 async function loadNotifications() {
   try {
-    const result = await api("/api/notifications");
+    const result = await api("/api/notifications", { cache: false });
     $("#notification-count").textContent = result.notifications.filter((item) => !item.is_read).length;
   } catch {}
 }
 
 async function api(path, options = {}) {
+  const method = options.method ?? "GET";
+  const cacheEnabled = method === "GET" && options.cache !== false;
+  const cacheTtlMs = Number(options.cacheTtlMs ?? API_GET_CACHE_MS);
+  const cacheKey = `${state.companySlug || "default"}:${path}`;
+  if (cacheEnabled) {
+    const cached = apiGetCache.get(cacheKey);
+    if (cached && Date.now() - cached.storedAt < cacheTtlMs) return cached.data;
+    if (apiGetPending.has(cacheKey)) return apiGetPending.get(cacheKey);
+  }
+  const guardedSubmission = claimGuardedFormSubmission(method);
   const headers = { Accept: "application/json", ...(options.headers ?? {}) };
   if (!["/api/companies", "/api/auth/login"].includes(path) && state.companySlug) headers["X-Company-Slug"] = state.companySlug;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  if (state.csrfToken && !["GET", "HEAD"].includes(options.method ?? "GET")) headers["X-CSRF-Token"] = state.csrfToken;
-  const response = await fetch(`${API_BASE}${path}`, { method: options.method ?? "GET", headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), credentials: "include" });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.error ?? "No fue posible completar la operación.");
-    error.status = response.status;
-    error.details = data.details;
-    if (response.status === 401 && state.user) showLogin();
-    throw error;
+  if (state.csrfToken && !["GET", "HEAD"].includes(method)) headers["X-CSRF-Token"] = state.csrfToken;
+  const request = (async () => {
+    const response = await fetch(`${API_BASE}${path}`, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), credentials: "include" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.error ?? "No fue posible completar la operación.");
+      error.status = response.status;
+      error.details = data.details;
+      if (response.status === 401 && state.user) showLogin();
+      throw error;
+    }
+    if (cacheEnabled) apiGetCache.set(cacheKey, { data, storedAt: Date.now() });
+    else if (!["GET", "HEAD"].includes(method)) {
+      apiGetCache.clear();
+      if (mutationAffectsHrSnapshot(path, method)) {
+        state.hrControl = null;
+        state.hrOptions = null;
+      }
+    }
+    return data;
+  })();
+  if (cacheEnabled) apiGetPending.set(cacheKey, request);
+  try { return await request; }
+  finally {
+    if (cacheEnabled) apiGetPending.delete(cacheKey);
+    releaseGuardedFormSubmission(guardedSubmission);
   }
-  return data;
+}
+
+function mutationAffectsHrSnapshot(path, method) {
+  if (["GET", "HEAD", "OPTIONS"].includes(method)) return false;
+  return path.startsWith("/api/hr/")
+    || path.startsWith("/api/portal/")
+    || path === "/api/safety/incapacities"
+    || path.startsWith("/api/areas")
+    || path.startsWith("/api/documents")
+    || path.startsWith("/api/masters/employees")
+    || path.startsWith("/api/catalogs/companies")
+    || path.startsWith("/api/users")
+    || path.startsWith("/api/roles");
 }
 
 function setCompanyContext(company) {
   if (!company?.slug) return;
+  if (state.companySlug !== company.slug) apiGetCache.clear();
+  state.company = company;
   state.companySlug = company.slug;
   localStorage.setItem("abicorp_company", state.companySlug);
 }
@@ -3520,781 +3897,189 @@ function openSafetyModal(type) {
   entityDialog.showModal();
 }
 
-async function renderHr() {
-  const token = beginPageRender();
-  const [control, options] = await Promise.all([api("/api/hr/control"), api("/api/hr/options")]);
-  if (!renderIsCurrent(token)) return;
-  state.hrOptions = options;
-  state.hrControl = control;
-  pageContent.innerHTML =
-    '<section class="workforce-command hr-command"><div class="workforce-command-copy"><span class="workforce-live"><i></i>PERSONAL CONECTADO</span><h2>Organiza a tu equipo</h2><p>Expedientes, permisos, vacaciones e incapacidades en un mismo centro.</p><div class="workforce-command-kpis"><div><strong>' + control.indicators.activePeople + '</strong><span>personas activas</span></div><div><strong>' + control.indicators.awayToday + '</strong><span>ausentes hoy</span></div></div><div class="workforce-command-actions">' + (hasPermission("hr.manage") ? '<button class="button ghost light" data-hr-catalogs>⚙ Catálogos</button>' : "") + '</div></div>' +
-    hrPeopleScene(control) + '</section>' +
-    hrAnalyticsDashboard(control) +
-    hrUnifiedDashboard(control);
-  bindHrAnalytics(control);
-  $$("[data-hr-new]").forEach((button) => button.onclick = () => openHrModal(button.dataset.hrNew));
-  $("[data-hr-catalogs]")?.addEventListener("click", () => openHrCatalogsModal());
-  $$("[data-hr-employee-action]").forEach((button) => button.onclick = () => openHrModal(button.dataset.hrEmployeeAction, Number(button.dataset.employeeId)));
-  $$("[data-hr-deactivate]").forEach((button) => button.onclick = () => openHrDeactivateModal(Number(button.dataset.hrDeactivate)));
-  $$(".hr-row-actions").forEach((menu) => menu.addEventListener("toggle", () => {
-    if (menu.open) $$(".hr-row-actions[open]").filter((other) => other !== menu).forEach((other) => other.removeAttribute("open"));
+async function renderPayroll() {
+  beginPageRender();
+  const control = await api("/api/payroll/control");
+  const cfdi = control.cfdi || { periods: [], receipts: [], indicators: {} };
+  const payrollSections = new Set(["overview", "receipts", "periods", "incidents"]);
+  if (!payrollSections.has(state.payrollSection)) state.payrollSection = "overview";
+  const incidentRows = control.incidents.map((row) => '<tr><td><strong>' + escapeHtml(row.employee_name) + '</strong><small>' + escapeHtml(row.employee_number) + '</small></td><td>' + escapeHtml(row.folio) + '</td><td>' + formatDateOnly(row.start_date) + ' — ' + formatDateOnly(row.end_date) + '</td><td>' + inventoryNumber(row.days) + ' d · ' + inventoryNumber(row.hours) + ' h</td><td>' + workforceStatus(row.status) + '</td></tr>').join("");
+  const receiptRows = cfdi.receipts.map((row) => `<tr><td><strong>${escapeHtml(row.receiver_name || row.employee_name || "Sin identificar")}</strong><small class="table-note">${escapeHtml(row.receiver_employee_number || row.receiver_rfc)}</small></td><td><strong>${escapeHtml(row.uuid)}</strong><small class="table-note">${row.payroll_type === "E" ? "Extraordinaria" : "Ordinaria"} · ${escapeHtml(row.period_code || "Sin periodo interno")}</small></td><td>${formatDateOnly(row.payment_date)}<small class="table-note">${formatDateOnly(row.period_start)} — ${formatDateOnly(row.period_end)}</small></td><td><strong>${money(row.total, row.currency_code)}</strong><small class="table-note">${row.file_count} archivo(s)</small></td><td>${payrollAssociationBadge(row.association_status)}${row.confirmed_at ? '<small class="table-note">Recepción confirmada</small>' : '<small class="table-note">Sin confirmar</small>'}</td><td><div class="table-actions"><button class="link-button" data-payroll-receipt="${row.id}">Ver</button>${row.association_status !== "associated" && hasPermission("payroll.manage") ? `<button class="link-button" data-payroll-associate="${row.id}">Relacionar</button>` : ""}</div></td></tr>`).join("");
+  const periodRows = cfdi.periods.map((row) => `<tr><td><strong>${escapeHtml(row.code)}</strong><small>${payrollFrequencyLabel(row.frequency)}</small></td><td>${formatDateOnly(row.start_date)} — ${formatDateOnly(row.end_date)}</td><td>${formatDateOnly(row.payment_date)}</td><td>${workforceStatus(row.status)}</td></tr>`).join("");
+  const storageReady = cfdi.storageProvider && cfdi.storageProvider !== "unconfigured";
+  const pendingAssociations = (cfdi.indicators.unmatched || 0) + (cfdi.indicators.ambiguous || 0);
+  const pendingIncidents = control.indicators.pending || 0;
+  const processedIncidents = control.indicators.processed || 0;
+  const canManage = hasPermission("payroll.manage");
+  const sectionClass = (section) => state.payrollSection === section ? "" : " hidden";
+  const tab = (section, label, count = null) => `<button type="button" class="payroll-tab${state.payrollSection === section ? " active" : ""}" data-payroll-section="${section}" role="tab" aria-selected="${state.payrollSection === section}"><span>${label}</span>${count == null ? "" : `<strong>${inventoryNumber(count)}</strong>`}</button>`;
+
+  pageContent.innerHTML = `
+    <section class="payroll-heading">
+      <div>
+        <span class="eyebrow">RECURSOS HUMANOS / NÓMINA Y CFDI</span>
+        <h2>Nómina y CFDI</h2>
+        <p>Submódulo laboral para preparar incidencias, periodos y recibos. Finanzas recibe únicamente la información necesaria para su procesamiento.</p>
+      </div>
+      <span class="payroll-owner-chip"><i></i> Administrado por Recursos Humanos</span>
+    </section>
+    <section class="payroll-command">
+      <div class="payroll-command-copy">
+        <span class="payroll-live"><i></i> CONTROL LABORAL Y FISCAL</span>
+        <h3>Del expediente al recibo</h3>
+        <p>Un flujo único conecta las incidencias autorizadas con cada periodo de nómina y su CFDI.</p>
+        <div class="payroll-command-stats">
+          <span><strong>${inventoryNumber(pendingIncidents)}</strong><small>incidencias pendientes</small></span>
+          <span><strong>${inventoryNumber(cfdi.indicators.receipts || 0)}</strong><small>CFDI importados</small></span>
+        </div>
+      </div>
+      <div class="payroll-flow" aria-label="Flujo operativo de nómina">
+        <article class="payroll-flow-step"><span>01</span><div><small>ORIGEN</small><strong>Incidencias</strong><p>Permisos y ajustes autorizados por RH.</p></div><b>${inventoryNumber(pendingIncidents)}</b></article>
+        <i aria-hidden="true">→</i>
+        <article class="payroll-flow-step"><span>02</span><div><small>PROCESO</small><strong>Periodo</strong><p>Consolida fechas y movimientos laborales.</p></div><b>${inventoryNumber(cfdi.periods.length)}</b></article>
+        <i aria-hidden="true">→</i>
+        <article class="payroll-flow-step"><span>03</span><div><small>RESULTADO</small><strong>CFDI</strong><p>Relaciona, protege y entrega los recibos.</p></div><b>${inventoryNumber(cfdi.indicators.associated || 0)}</b></article>
+      </div>
+    </section>
+    <nav class="payroll-tabs" role="tablist" aria-label="Secciones de nómina">
+      ${tab("overview", "Resumen")}${tab("receipts", "Recibos CFDI", cfdi.indicators.receipts || 0)}${tab("periods", "Periodos", cfdi.periods.length)}${tab("incidents", "Prenómina", pendingIncidents)}
+    </nav>
+    <div class="payroll-workspace">
+      <section class="payroll-workspace-section${sectionClass("overview")}" data-payroll-panel="overview" role="tabpanel">
+        <div class="payroll-metrics">
+          ${metricCard("CFDI importados", cfdi.indicators.receipts || 0, "XML fiscales registrados", "▣", true)}
+          ${metricCard("Relacionados", cfdi.indicators.associated || 0, "Con expediente laboral", "✓")}
+          ${metricCard("Bandeja pendiente", pendingAssociations, "Requieren validación", "!")}
+          ${metricCard("Por confirmar", cfdi.indicators.pendingConfirmations || 0, "Recepción del colaborador", "→")}
+        </div>
+        <div class="payroll-overview-grid">
+          <article class="payroll-status-card ${storageReady ? "ready" : "warning"}">
+            <div class="payroll-status-icon">${storageReady ? "✓" : "!"}</div>
+            <div><span>ARCHIVOS PRIVADOS</span><h3>${storageReady ? "Almacenamiento disponible" : "Configuración pendiente"}</h3><p>${storageReady ? "Los XML y PDF pueden resguardarse con auditoría de acceso." : "La carga de XML y PDF permanece bloqueada hasta configurar almacenamiento privado. PostgreSQL conserva solamente metadatos."}</p></div>
+          </article>
+          <article class="payroll-queue-card">
+            <div class="panel-head"><div><span class="eyebrow">TRABAJO PENDIENTE</span><h3>Cola operativa</h3></div></div>
+            <button type="button" data-payroll-section="incidents"><span>Incidencias por procesar</span><strong>${inventoryNumber(pendingIncidents)}</strong></button>
+            <button type="button" data-payroll-section="receipts"><span>CFDI por relacionar</span><strong>${inventoryNumber(pendingAssociations)}</strong></button>
+            <button type="button" data-payroll-section="receipts"><span>Confirmaciones pendientes</span><strong>${inventoryNumber(cfdi.indicators.pendingConfirmations || 0)}</strong></button>
+          </article>
+        </div>
+        <div class="payroll-responsibility">
+          <div><span>RH</span><strong>Autoriza y prepara</strong><small>Expedientes, incidencias y periodos</small></div><i>→</i>
+          <div><span>FIN</span><strong>Procesa el impacto</strong><small>Cálculo, dispersión y contabilidad</small></div><i>→</i>
+          <div><span>COL</span><strong>Recibe y confirma</strong><small>Consulta protegida desde el portal</small></div>
+        </div>
+      </section>
+      <section class="payroll-workspace-section${sectionClass("receipts")}" data-payroll-panel="receipts" role="tabpanel">
+        <div class="panel payroll-panel"><div class="panel-head"><div><span class="eyebrow">ARCHIVO FISCAL</span><h3>Recibos CFDI de nómina</h3><p>UUID, relación laboral, archivos privados y confirmación del colaborador.</p></div>${canManage && storageReady ? '<button class="button primary" data-payroll-import>Importar CFDI</button>' : ""}</div>${receiptRows ? `<div class="table-wrap"><table><thead><tr><th>Receptor</th><th>UUID / periodo</th><th>Pago</th><th>Total</th><th>Asociación</th><th></th></tr></thead><tbody>${receiptRows}</tbody></table></div>` : emptyMarkup("Sin recibos CFDI", storageReady ? "Importa un XML de nómina timbrado para comenzar." : "Configura el almacenamiento privado para habilitar la importación.")}</div>
+      </section>
+      <section class="payroll-workspace-section${sectionClass("periods")}" data-payroll-panel="periods" role="tabpanel">
+        <div class="panel payroll-panel"><div class="panel-head"><div><span class="eyebrow">CALENDARIO DE PAGO</span><h3>Periodos de nómina</h3><p>Configura una periodicidad semanal, quincenal, mensual o personalizada.</p></div>${canManage ? '<button class="button primary" data-payroll-period>Nuevo periodo</button>' : ""}</div>${periodRows ? `<div class="table-wrap"><table><thead><tr><th>Periodo</th><th>Rango</th><th>Fecha de pago</th><th>Estado</th></tr></thead><tbody>${periodRows}</tbody></table></div>` : emptyMarkup("Sin periodos", "Crea el primer periodo antes de organizar los CFDI.")}</div>
+      </section>
+      <section class="payroll-workspace-section${sectionClass("incidents")}" data-payroll-panel="incidents" role="tabpanel">
+        <div class="panel payroll-panel"><div class="panel-head"><div><span class="eyebrow">PRENÓMINA</span><h3>Incidencias autorizadas</h3><p>Permisos sin goce y movimientos con autorización final de Recursos Humanos.</p></div><span class="payroll-processed-chip">${inventoryNumber(processedIncidents)} procesadas</span></div>${incidentRows ? '<div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Solicitud</th><th>Periodo</th><th>Impacto</th><th>Estado</th></tr></thead><tbody>' + incidentRows + '</tbody></table></div>' : emptyMarkup("Sin incidencias", "Los permisos sin goce autorizados aparecerán aquí.")}</div>
+      </section>
+    </div>`;
+  $$('[data-payroll-section]').forEach((button) => button.addEventListener("click", () => {
+    state.payrollSection = button.dataset.payrollSection;
+    $$('[data-payroll-section]').forEach((item) => {
+      item.classList.toggle("active", item.dataset.payrollSection === state.payrollSection && item.classList.contains("payroll-tab"));
+      if (item.classList.contains("payroll-tab")) item.setAttribute("aria-selected", String(item.dataset.payrollSection === state.payrollSection));
+    });
+    $$('[data-payroll-panel]').forEach((panel) => panel.classList.toggle("hidden", panel.dataset.payrollPanel !== state.payrollSection));
   }));
-  $$("[data-hr-action]").forEach((button) => button.onclick = async () => {
+  $$('[data-payroll-period]').forEach((button) => button.addEventListener("click", openPayrollPeriodModal));
+  $$('[data-payroll-import]').forEach((button) => button.addEventListener("click", () => openPayrollCfdiImportModal(cfdi.periods)));
+  $$('[data-payroll-receipt]').forEach((button) => button.onclick = () => openPayrollCfdiDetail(Number(button.dataset.payrollReceipt)));
+  $$('[data-payroll-associate]').forEach((button) => button.onclick = () => openPayrollCfdiAssociation(Number(button.dataset.payrollAssociate)));
+}
+
+function payrollAssociationBadge(status) {
+  const labels = { associated: "Relacionado", unmatched: "No relacionado", ambiguous: "Coincidencia ambigua" };
+  return `<span class="badge ${status === "associated" ? "success" : "danger"}">● ${labels[status] || status}</span>`;
+}
+
+function payrollFrequencyLabel(value) {
+  return ({ weekly: "Semanal", biweekly: "Quincenal", monthly: "Mensual", other: "Otra" })[value] || value;
+}
+
+function openPayrollPeriodModal() {
+  $("#entity-modal-content").innerHTML = `<form id="payroll-period-form"><div class="modal-head"><div><span class="eyebrow">NÓMINA</span><h2>Nuevo periodo</h2><p class="muted">Define el rango y la fecha efectiva de pago.</p></div><button type="button" data-close-modal>×</button></div><div class="form-grid"><label>Código<input name="code" maxlength="60" placeholder="Ej. 2026-Q15" required></label><label>Periodicidad<select name="frequency" required><option value="weekly">Semanal</option><option value="biweekly">Quincenal</option><option value="monthly">Mensual</option><option value="other">Otra</option></select></label><label>Inicio<input name="startDate" type="date" required></label><label>Fin<input name="endDate" type="date" required></label><label>Fecha de pago<input name="paymentDate" type="date" required></label><label>Estado<select name="status"><option value="open">Abierto</option><option value="draft">Borrador</option></select></label></div><label>Notas<textarea name="notes" rows="3" maxlength="800"></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Crear periodo</button></div></form>`;
+  $("#payroll-period-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget, box = $(".form-error", form), submit = $('button[type="submit"]', form);
+    submit.disabled = true;
     try {
-      await api("/api/hr/leaves/" + button.dataset.hrId + "/action", { method: "POST", body: { action: button.dataset.hrAction } });
-      toast("Solicitud actualizada."); await renderHr();
-    } catch (error) { toast(error.message, "error"); }
-  });
-}
-
-function hrAnalyticsDashboard(control) {
-  const areaOptions = [...new Map(control.people.filter((row) => row.area_id).map((row) => [String(row.area_id), row.area_name || "Sin área"])).entries()]
-    .sort((a, b) => a[1].localeCompare(b[1], "es"))
-    .map(([id, name]) => '<option value="' + escapeAttribute(id) + '">' + escapeHtml(name) + '</option>').join("");
-  const shiftOptions = [...new Map(control.people.filter((row) => row.work_shift_id).map((row) => [String(row.work_shift_id), row.shift_name || hrShift(row.shift)])).entries()]
-    .sort((a, b) => a[1].localeCompare(b[1], "es"))
-    .map(([id, name]) => '<option value="' + escapeAttribute(id) + '">' + escapeHtml(name) + '</option>').join("");
-  return '<section class="hr-analytics panel" data-hr-analytics>' +
-    '<div class="hr-analytics-head"><div><span class="eyebrow">INTELIGENCIA DE PLANTILLA</span><h2>Pulso de Recursos Humanos</h2><p>Indicadores, distribución, disponibilidad y alertas calculadas con la información operativa.</p></div><span class="hr-analytics-live"><i></i>DATOS ACTUALIZADOS</span></div>' +
-    '<div class="hr-analytics-filters">' +
-      '<label><span>Periodo</span><select data-hr-filter="period"><option value="month">Mes actual</option><option value="quarter">Últimos 90 días</option><option value="year">Año actual</option><option value="all">Histórico</option></select></label>' +
-      '<label><span>Área</span><select data-hr-filter="area"><option value="all">Todas las áreas</option>' + areaOptions + '</select></label>' +
-      '<label><span>Turno</span><select data-hr-filter="shift"><option value="all">Todos los turnos</option>' + shiftOptions + '</select></label>' +
-      '<label><span>Contratación</span><select data-hr-filter="employment"><option value="all">Todos los tipos</option><option value="permanent">Permanente</option><option value="temporary">Temporal</option><option value="contractor">Contratista</option><option value="intern">Practicante</option></select></label>' +
-      '<label><span>Estado</span><select data-hr-filter="status"><option value="all">Todos</option><option value="active">Activos</option><option value="leave">Ausentes</option><option value="inactive">Bajas</option></select></label>' +
-      '<button type="button" data-hr-clear-filters>Limpiar filtros</button>' +
-    '</div><div data-hr-analytics-body></div></section>';
-}
-
-function bindHrAnalytics(control) {
-  const root = $("[data-hr-analytics]");
-  if (!root) return;
-  const render = () => {
-    const filters = {};
-    $$("[data-hr-filter]", root).forEach((input) => { filters[input.dataset.hrFilter] = input.value; });
-    $("[data-hr-analytics-body]", root).innerHTML = hrAnalyticsBody(control, filters);
+      await api("/api/payroll/periods", { method: "POST", body: Object.fromEntries(new FormData(form)) });
+      entityDialog.close(); toast("Periodo de nómina creado."); await renderPayroll();
+    } catch (error) {
+      submit.disabled = false; box.textContent = error.message; box.classList.remove("hidden");
+    }
   };
-  $$("[data-hr-filter]", root).forEach((input) => input.addEventListener("change", render));
-  $("[data-hr-clear-filters]", root).onclick = () => {
-    $$("[data-hr-filter]", root).forEach((input) => { input.selectedIndex = 0; });
-    render();
+  entityDialog.showModal();
+}
+
+function openPayrollCfdiImportModal(periods) {
+  const periodOptions = '<option value="">Sin periodo interno</option>' + periods.map((row) => `<option value="${row.id}">${escapeHtml(row.code)} · ${formatDateOnly(row.payment_date)}</option>`).join("");
+  $("#entity-modal-content").innerHTML = `<form id="payroll-cfdi-form"><div class="modal-head"><div><span class="eyebrow">ARCHIVO FISCAL PRIVADO</span><h2>Importar CFDI de nómina</h2><p class="muted">El XML es obligatorio; el PDF puede adjuntarse en la misma operación.</p></div><button type="button" data-close-modal>×</button></div><label>Periodo de nómina<select name="periodId">${periodOptions}</select></label><div class="form-grid"><label>XML timbrado<input name="xml" type="file" accept=".xml,application/xml,text/xml" required><small class="field-help">CFDI 4.0 · complemento Nómina 1.2 · máximo 4 MB</small></label><label>Representación PDF <small>Opcional</small><input name="pdf" type="file" accept=".pdf,application/pdf"><small class="field-help">Máximo 7 MB</small></label></div><div class="notice info"><strong>Validación automática</strong><p>Se verificará el UUID, se detectarán duplicados y se buscará al colaborador por ID laboral, RFC y CURP.</p></div><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Validar e importar</button></div></form>`;
+  $("#payroll-cfdi-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget, data = new FormData(form), xmlFile = data.get("xml"), pdfFile = data.get("pdf"), box = $(".form-error", form), submit = $('button[type="submit"]', form);
+    submit.disabled = true; submit.textContent = "Validando XML…";
+    try {
+      const body = { periodId: data.get("periodId") || null, xml: { originalName: xmlFile.name, mimeType: xmlFile.type || "application/xml", contentBase64: await fileToBase64(xmlFile) } };
+      if (pdfFile?.size) body.pdf = { originalName: pdfFile.name, mimeType: pdfFile.type || "application/pdf", contentBase64: await fileToBase64(pdfFile) };
+      const result = await api("/api/payroll/cfdi/receipts", { method: "POST", body });
+      entityDialog.close();
+      toast(result.receipt.association_status === "associated" ? "CFDI importado y relacionado." : "CFDI importado a la bandeja pendiente.");
+      await renderPayroll();
+    } catch (error) {
+      submit.disabled = false; submit.textContent = "Validar e importar"; box.textContent = error.message; box.classList.remove("hidden");
+    }
   };
-  render();
+  entityDialog.showModal();
 }
 
-function hrAnalyticsBody(control, filters) {
-  const bounds = hrAnalyticsPeriod(filters.period);
-  const people = control.people.filter((row) =>
-    (filters.area === "all" || String(row.area_id || "") === filters.area) &&
-    (filters.shift === "all" || String(row.work_shift_id || "") === filters.shift) &&
-    (filters.employment === "all" || row.employment_type === filters.employment) &&
-    (filters.status === "all" || row.status === filters.status));
-  const peopleIds = new Set(people.map((row) => Number(row.id)));
-  const leaves = control.leaves.filter((row) => peopleIds.has(Number(row.employee_id)));
-  const active = people.filter((row) => row.status === "active");
-  const hires = people.filter((row) => hrDateWithin(row.hire_date || row.created_at, bounds)).length;
-  const exits = people.filter((row) => row.status === "inactive" && hrDateWithin(row.updated_at, bounds)).length;
-  const turnover = Math.round(exits / Math.max(1, active.length + exits / 2) * 1000) / 10;
-  const currentDate = todayInput();
-  const activeAbsences = leaves.filter((row) => row.status === "approved" && row.start_date <= currentDate && row.end_date >= currentDate);
-  const availablePeople = Math.max(0, active.length - new Set(activeAbsences.map((row) => row.employee_id)).size);
-  const vacationDays = active.filter((row) => row.employment_type === "permanent")
-    .reduce((sum, row) => sum + Number(row.vacation_balance || 0), 0);
-  const kpis = [
-    ["PLANTILLA ACTIVA", active.length, "Colaboradores disponibles", "primary"],
-    ["ALTAS", hires, hrAnalyticsPeriodLabel(filters.period), "positive"],
-    ["BAJAS", exits, hrAnalyticsPeriodLabel(filters.period), exits ? "warning" : ""],
-    ["ROTACIÓN", inventoryNumber(turnover) + "%", "Bajas sobre plantilla promedio", turnover >= 10 ? "warning" : ""],
-    ["DISPONIBLES HOY", availablePeople, activeAbsences.length + " ausencia(s) activa(s)", ""],
-    ["VACACIONES", inventoryNumber(vacationDays) + " d", "Saldo disponible de la plantilla", ""],
-  ].map(([label, value, detail, tone]) => '<article class="hr-stat-card ' + tone + '"><span>' + label + '</span><strong>' + value + '</strong><small>' + detail + '</small></article>').join("");
-  const areaGroups = hrAnalyticsGroups(active, (row) => row.area_name || "Sin área");
-  const contractGroups = hrAnalyticsGroups(active, (row) => hrEmployment(row.employment_type));
-  const shiftGroups = hrAnalyticsGroups(active, (row) => row.employment_type === "contractor" ? "Sin turno" : (row.shift_name || hrShift(row.shift)));
-  const distribution = '<article class="hr-insight-card hr-distribution-card"><header><div><span>DISTRIBUCIÓN</span><h3>Composición de la plantilla</h3></div><strong>' + active.length + ' ACTIVO(S)</strong></header><div class="hr-chart-tabs"><div><h4>Por área</h4>' + hrAnalyticsBars(areaGroups, active.length) + '</div><div><h4>Por contratación</h4>' + hrAnalyticsBars(contractGroups, active.length) + '</div><div><h4>Por turno</h4>' + hrAnalyticsBars(shiftGroups, active.length) + '</div></div></article>';
-  const projection = hrAbsenceProjection(active, leaves);
-  const alerts = hrAnalyticsAlerts(people, leaves);
-  const statusSummary = '<article class="hr-insight-card hr-availability-card"><header><div><span>PRÓXIMOS 28 DÍAS</span><h3>Proyección de disponibilidad</h3></div><strong>' + availablePeople + ' HOY</strong></header>' + projection + '</article>';
-  const alertMarkup = '<article class="hr-insight-card hr-alert-card"><header><div><span>ATENCIÓN REQUERIDA</span><h3>Alertas operativas</h3></div><strong>' + alerts.length + ' ALERTA(S)</strong></header><div class="hr-alert-list">' + (alerts.length ? alerts.slice(0, 8).map((alert) => '<div class="' + alert.tone + '"><i>' + alert.symbol + '</i><div><strong>' + escapeHtml(alert.title) + '</strong><small>' + escapeHtml(alert.detail) + '</small></div></div>').join("") : '<div class="hr-analytics-empty"><i>✓</i><div><strong>Sin alertas críticas</strong><small>La plantilla filtrada no requiere atención inmediata.</small></div></div>') + '</div></article>';
-  const empty = people.length ? "" : '<div class="hr-analytics-no-results">No hay colaboradores que coincidan con los filtros seleccionados.</div>';
-  return empty + '<div class="hr-stat-grid">' + kpis + '</div><div class="hr-insight-grid">' + distribution + statusSummary + alertMarkup + '</div>';
-}
-
-function hrAnalyticsPeriod(period) {
-  const end = todayInput();
-  if (period === "all") return { start: "0000-01-01", end };
-  if (period === "year") return { start: end.slice(0, 4) + "-01-01", end };
-  if (period === "quarter") return { start: hrIsoDateOffset(-89), end };
-  return { start: end.slice(0, 7) + "-01", end };
-}
-
-function hrAnalyticsPeriodLabel(period) {
-  return ({ month: "Durante el mes actual", quarter: "Durante los últimos 90 días", year: "Durante el año actual", all: "En todo el historial" })[period] || "Durante el periodo";
-}
-
-function hrIsoDateOffset(days, origin = todayInput()) {
-  const date = new Date(origin + "T00:00:00Z");
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function hrDateWithin(value, bounds) {
-  const date = String(value || "").slice(0, 10);
-  return Boolean(date && date >= bounds.start && date <= bounds.end);
-}
-
-function hrAnalyticsGroups(rows, labelFor) {
-  const counts = new Map();
-  rows.forEach((row) => {
-    const label = labelFor(row);
-    counts.set(label, (counts.get(label) || 0) + 1);
-  });
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "es")).slice(0, 6);
-}
-
-function hrAnalyticsBars(groups, total) {
-  if (!groups.length) return '<p class="hr-chart-empty">Sin datos</p>';
-  return '<div class="hr-bar-chart">' + groups.map(([label, value]) => {
-    const percent = Math.round(value / Math.max(1, total) * 100);
-    return '<div class="hr-bar-row"><div><span>' + escapeHtml(label) + '</span><strong>' + value + '</strong></div><b><i style="width:' + percent + '%"></i></b><small>' + percent + '%</small></div>';
-  }).join("") + '</div>';
-}
-
-function hrAbsenceProjection(activePeople, leaves) {
-  const activeIds = new Set(activePeople.map((row) => Number(row.id)));
-  const weeks = Array.from({ length: 4 }, (_, index) => {
-    const start = hrIsoDateOffset(index * 7);
-    const end = hrIsoDateOffset(index * 7 + 6);
-    const absences = leaves.filter((row) => activeIds.has(Number(row.employee_id)) && row.status === "approved" && row.start_date <= end && row.end_date >= start);
-    const absent = new Set(absences.map((row) => Number(row.employee_id))).size;
-    const available = Math.max(0, activePeople.length - absent);
-    const percent = Math.round(available / Math.max(1, activePeople.length) * 100);
-    return { start, end, absent, available, percent };
-  });
-  return '<div class="hr-availability-weeks">' + weeks.map((week, index) => '<div><span>SEMANA ' + (index + 1) + '</span><strong>' + week.available + ' disponibles</strong><small>' + formatDateOnly(week.start) + ' — ' + formatDateOnly(week.end) + '</small><b><i style="width:' + week.percent + '%"></i></b><em>' + week.absent + ' ausencia(s)</em></div>').join("") + '</div>';
-}
-
-function hrAnalyticsAlerts(people, leaves) {
-  const alerts = [];
-  const currentDate = todayInput();
-  const next30 = hrIsoDateOffset(30);
-  const next14 = hrIsoDateOffset(14);
-  people.filter((row) => row.status !== "inactive").forEach((row) => {
-    const endDate = row.employment_type === "temporary" ? row.contract_end_date
-      : ["contractor", "intern"].includes(row.employment_type) ? row.service_end_date : "";
-    if (endDate && endDate >= currentDate && endDate <= next30) {
-      alerts.push({ tone: "warning", symbol: "!", title: row.full_name, detail: hrEmployment(row.employment_type) + " concluye el " + formatDateOnly(endDate) });
-    }
-    const missing = [
-      !row.email && "correo",
-      !row.phone && "teléfono",
-      !row.area_id && "área",
-      !row.position_id && "puesto",
-      row.employment_type !== "contractor" && !row.work_shift_id && "turno",
-    ].filter(Boolean);
-    if (missing.length) alerts.push({ tone: "info", symbol: "i", title: "Expediente incompleto · " + row.full_name, detail: "Falta: " + missing.join(", ") });
-  });
-  const pending = leaves.filter((row) => row.status === "submitted");
-  if (pending.length) alerts.push({ tone: "warning", symbol: "?", title: pending.length + " solicitud(es) pendientes", detail: "Requieren autorización de Recursos Humanos." });
-  const upcoming = leaves.filter((row) => row.status === "approved" && row.start_date > currentDate && row.start_date <= next14);
-  if (upcoming.length) alerts.push({ tone: "info", symbol: "→", title: upcoming.length + " ausencia(s) próximas", detail: "Comienzan durante los próximos 14 días." });
-  return alerts;
-}
-
-function hrUnifiedDashboard(control) {
-  const pending = control.leaves.filter((row) => row.status === "submitted");
-  const recentLeaves = control.leaves.slice(0, 8);
-  const employeeCards = control.people.map((row) => {
-    const portrait = row.photo_filename
-      ? '<img class="hr-employee-avatar" src="' + API_BASE + '/api/hr/people/' + row.id + '/photo?v=' + encodeURIComponent(row.updated_at || "") + '" alt="Fotografía de ' + escapeAttribute(row.full_name) + '" />'
-      : '<span class="hr-employee-avatar fallback">' + escapeHtml(initials(row.full_name)) + '</span>';
-    const operationActions = row.status !== "inactive" && hasPermission("hr.operate")
-      ? '<button type="button" data-hr-employee-action="permission" data-employee-id="' + row.id + '">Permiso</button>' +
-        (row.employment_type === "permanent" ? '<button type="button" data-hr-employee-action="vacation" data-employee-id="' + row.id + '">Vacaciones</button>' : "") +
-        '<button type="button" data-hr-employee-action="incapacity" data-employee-id="' + row.id + '">Incapacidad</button>'
-      : "";
-    const actionButtons = operationActions +
-      (row.status !== "inactive" && hasPermission("hr.manage") ? '<button class="hr-deactivate-action" type="button" data-hr-deactivate="' + row.id + '">Dar de baja</button>' : "") +
-      (hasPermission("hr.manage") ? '<button class="hr-edit-action" type="button" data-hr-employee-action="edit" data-employee-id="' + row.id + '">Editar expediente</button>' : "");
-    const actions = actionButtons ? '<details class="hr-row-actions"><summary>Gestionar <span>⌄</span></summary><div>' + actionButtons + '</div></details>' : "";
-    const shiftTitle = row.employment_type === "contractor" ? "Sin horario asignado" : (row.shift_name || hrShift(row.shift));
-    const shiftDetail = row.employment_type === "contractor" ? (row.organization_name || "Contratista externo") : hrShiftSchedule(row);
-    let trackingLabel = "VACACIONES";
-    let trackingTitle = row.employment_type === "permanent" ? inventoryNumber(row.vacation_balance || 0) + " días" : "No aplica";
-    let trackingDetail = row.employment_type === "permanent"
-      ? (row.vacation_plan_name || (hrServiceYears(row.hire_date) < 1 ? "Disponible al cumplir 1 año" : "Sin plan asignado"))
-      : hrEmployment(row.employment_type);
-    if (row.employment_type === "contractor") {
-      trackingLabel = "DÍAS CONTRATADOS";
-      trackingTitle = inventoryNumber(row.service_total_days || 0) + " días";
-      trackingDetail = row.service_start_date && row.service_end_date
-        ? formatDateOnly(row.service_start_date) + " — " + formatDateOnly(row.service_end_date)
-        : "Periodo sin definir";
-    } else if (row.employment_type === "intern") {
-      trackingLabel = "HORAS DE PRÁCTICA";
-      trackingTitle = inventoryNumber(row.completed_service_hours || 0) + " / " + inventoryNumber(row.required_service_hours || 0) + " h";
-      trackingDetail = inventoryNumber(row.remaining_service_hours || 0) + " h pendientes · " + inventoryNumber(row.service_progress_percent || 0) + "%";
-    }
-    const timeline = hrEmploymentTimeline(row);
-    return '<article class="hr-employee-card"><div class="hr-employee-identity">' + portrait + '<div><small>' + escapeHtml(row.employee_number) + '</small><strong>' + escapeHtml(row.full_name) + '</strong><p>' + escapeHtml(row.email || row.phone || "Sin contacto") + '</p></div>' + workforceStatus(row.status) + '</div><div class="hr-employee-work"><div><span>ÁREA Y PUESTO</span><strong>' + escapeHtml(row.area_name || "Sin área") + '</strong><small>' + escapeHtml(row.job_position_name || row.position || "Sin puesto") + '</small></div><div><span>TURNO · ' + escapeHtml(hrEmployment(row.employment_type)) + '</span><strong>' + escapeHtml(shiftTitle) + '</strong><small>' + escapeHtml(shiftDetail) + '</small></div></div><div class="hr-employee-facts"><div><span>' + trackingLabel + '</span><strong>' + escapeHtml(trackingTitle) + '</strong><small>' + escapeHtml(trackingDetail) + '</small></div><div><span>' + escapeHtml(timeline.label) + '</span><strong>' + escapeHtml(timeline.title) + '</strong><small>' + escapeHtml(timeline.detail) + '</small></div></div><div class="hr-employee-manage">' + actions + '</div></article>';
-  }).join("");
-  const requestRows = recentLeaves.map((row) => '<div class="hr-request-row"><span class="hr-request-kind">' + hrLeaveSymbol(row.leave_type) + '</span><div><strong>' + escapeHtml(row.employee_name) + ' · ' + escapeHtml(row.folio) + '</strong><small>' + hrLeaveLabel(row.leave_type) + ' · ' + formatDateOnly(row.start_date) + ' — ' + formatDateOnly(row.end_date) + '</small></div>' + workforceStatus(row.status) + '<div class="hr-request-actions">' + hrLeaveActions(row) + '</div></div>').join("");
-  const activityColumn = '<aside class="hr-activity-column"><article class="panel"><div class="panel-head"><div><h3>Solicitudes y ausencias</h3><p>Permisos, vacaciones e incapacidades.</p></div><span>' + pending.length + ' PENDIENTE(S)</span></div><div class="compact-list">' + (requestRows || emptyMarkup("Sin solicitudes", "Las solicitudes creadas desde cada trabajador aparecerán aquí.")) + '</div></article></aside>';
-  const addPerson = hasPermission("hr.manage") ? '<button class="button primary small" type="button" data-hr-new="person">＋ Agregar personal</button>' : "";
-  const teamColumn = '<section class="panel hr-team-panel"><div class="panel-head"><div><span class="eyebrow">GESTIÓN DESDE LA PERSONA</span><h3>Mi equipo</h3><p>El personal guardado aquí también aparece en Datos Maestros.</p></div><div class="hr-team-head-actions"><span>' + control.people.length + ' PERSONA(S)</span>' + addPerson + '</div></div><div class="hr-team-summary"><div><strong>' + control.indicators.activePeople + '</strong><span>ACTIVOS</span></div><div><strong>' + pending.length + '</strong><span>POR APROBAR</span></div><div><strong>' + control.indicators.staffEntriesMonth + '</strong><span>ALTAS DEL MES</span></div><div><strong>' + inventoryNumber(control.indicators.turnoverRate || 0) + '%</strong><span>ROTACIÓN DEL MES</span></div></div><div class="hr-employee-list">' + (employeeCards || emptyMarkup("No hay personal registrado", "Agrega el primer expediente para comenzar.")) + '</div></section>';
-  return '<section class="hr-unified-layout">' + activityColumn + teamColumn + '</section>';
-}
-
-function hrLeaveLabel(type) { return ({ permission: "Permiso", vacation: "Vacaciones", incapacity: "Incapacidad" })[type] || type; }
-function hrLeaveSymbol(type) { return ({ permission: "P", vacation: "V", incapacity: "+" })[type] || "·"; }
-
-function hrPeopleScene(control) {
-  const pending = control.indicators.pendingRequests;
-  return '<div class="workforce-scene hr-scene" aria-hidden="true"><div class="workforce-grid-floor"></div><div class="hr-ops-header"><span>CENTRO DE PERSONAS</span><i></i><strong>OPERACIÓN ACTIVA</strong></div><div class="hr-ops-platform"></div><div class="hr-console hr-team-console"><header><span>01</span><strong>PLANTILLA</strong></header><div class="hr-avatar-grid"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="hr-console-value"><strong>' + control.indicators.activePeople + '</strong><span>PERSONAS ACTIVAS</span></div><footer><i></i>EXPEDIENTES AL DÍA</footer></div><div class="hr-console hr-request-console"><header><span>02</span><strong>SOLICITUDES</strong></header><div class="hr-request-stack"><i></i><i></i><i></i><span>✓</span></div><div class="hr-console-value"><strong>' + pending + '</strong><span>POR REVISAR</span></div><footer><i></i>PERMISOS Y AUSENCIAS</footer></div><div class="hr-console hr-attendance-console"><header><span>03</span><strong>ROTACIÓN</strong></header><div class="hr-clock-face"><span>↕</span><i></i></div><div class="hr-console-value"><strong>' + inventoryNumber(control.indicators.turnoverRate || 0) + '%</strong><span>ROTACIÓN DEL MES</span></div><footer><i></i>' + control.indicators.staffEntriesMonth + ' ALTAS · ' + control.indicators.staffExitsMonth + ' BAJAS</footer></div><div class="workforce-scene-caption"><span>Plantilla · solicitudes · rotación</span><strong>EQUIPO SINCRONIZADO</strong></div></div>';
-}
-
-function hrEmploymentDetailsMarkup(person = {}) {
-  const value = (field) => escapeAttribute(person[field] || "");
-  return '<section class="hr-employment-section span-two hidden" data-employment-section="temporary"><div class="hr-employment-section-head"><span>CONTRATO TEMPORAL</span></div><div class="form-grid"><label>Fin del contrato<input name="contractEndDate" type="date" value="' + value("contract_end_date") + '" data-employment-required /></label></div></section>' +
-    '<section class="hr-employment-section span-two hidden" data-employment-section="contractor"><div class="hr-employment-section-head"><span>EMPRESA DE PROCEDENCIA</span></div><div class="form-grid"><label>Empresa perteneciente<input name="organizationName" maxlength="180" value="' + value("organization_name") + '" data-employment-required /></label><label>Contacto de la empresa<input name="organizationContactName" maxlength="180" value="' + value("organization_contact_name") + '" /></label><label>Teléfono de la empresa<input name="organizationContactPhone" maxlength="40" value="' + value("organization_contact_phone") + '" /></label><label>Correo de la empresa<input name="organizationContactEmail" type="email" maxlength="180" value="' + value("organization_contact_email") + '" /></label><label>Inicio del servicio<input name="serviceStartDate" type="date" value="' + value("service_start_date") + '" data-employment-required /></label><label>Fin del servicio<input name="serviceEndDate" type="date" value="' + value("service_end_date") + '" data-employment-required /></label><div class="hr-tracking-summary span-two" data-contractor-days><span>DÍAS PROGRAMADOS</span><strong>' + inventoryNumber(person.service_total_days || 0) + '</strong><small>Se calculan automáticamente con el periodo de servicio.</small></div><label class="span-two">Datos de la empresa<textarea name="organizationDetails" rows="2" placeholder="Dirección, especialidad o información de referencia">' + escapeHtml(person.organization_details || "") + '</textarea></label></div></section>' +
-    '<section class="hr-employment-section span-two hidden" data-employment-section="intern"><div class="hr-employment-section-head"><span>INSTITUCIÓN Y ASESOR</span></div><div class="form-grid"><label>Institución<input name="organizationName" maxlength="180" value="' + value("organization_name") + '" data-employment-required /></label><label>Contacto de la institución<input name="organizationContactName" maxlength="180" value="' + value("organization_contact_name") + '" /></label><label>Teléfono de la institución<input name="organizationContactPhone" maxlength="40" value="' + value("organization_contact_phone") + '" /></label><label>Correo de la institución<input name="organizationContactEmail" type="email" maxlength="180" value="' + value("organization_contact_email") + '" /></label><label>Inicio de prácticas<input name="serviceStartDate" type="date" value="' + value("service_start_date") + '" data-employment-required /></label><label>Fin de prácticas<input name="serviceEndDate" type="date" value="' + value("service_end_date") + '" data-employment-required /></label><label>Horas requeridas<input name="requiredServiceHours" type="number" min="1" step="0.5" value="' + value("required_service_hours") + '" data-employment-required /></label><div class="hr-tracking-summary"><span>HORAS PLANEADAS</span><strong data-intern-planned-hours>' + inventoryNumber(person.planned_service_hours || 0) + '</strong><small>Calculadas con el turno y el periodo.</small></div><div class="hr-intern-progress span-two"><div><span>HORAS ACUMULADAS</span><strong data-intern-completed-hours>' + inventoryNumber(person.completed_service_hours || 0) + '</strong></div><div><span>HORAS PENDIENTES</span><strong data-intern-remaining-hours>' + inventoryNumber(person.remaining_service_hours || person.required_service_hours || 0) + '</strong></div><div><span>AVANCE</span><strong data-intern-progress>' + inventoryNumber(person.service_progress_percent || 0) + '%</strong></div></div><label class="span-two">Datos de la institución<textarea name="organizationDetails" rows="2" placeholder="Carrera, plantel, dirección o convenio">' + escapeHtml(person.organization_details || "") + '</textarea></label><label>Asesor responsable<input name="advisorName" maxlength="180" value="' + value("advisor_name") + '" data-employment-required /></label><label>Teléfono del asesor<input name="advisorPhone" maxlength="40" value="' + value("advisor_phone") + '" /></label><label>Correo del asesor<input name="advisorEmail" type="email" maxlength="180" value="' + value("advisor_email") + '" /></label></div></section>';
-}
-
-function hrServiceDayCount(startDate, endDate) {
-  if (!startDate || !endDate || endDate < startDate) return 0;
-  return Math.floor((Date.parse(endDate + "T00:00:00Z") - Date.parse(startDate + "T00:00:00Z")) / 86400000) + 1;
-}
-
-function hrDaysUntil(date) {
-  if (!date) return null;
-  return Math.ceil((Date.parse(date + "T00:00:00Z") - Date.parse(todayInput() + "T00:00:00Z")) / 86400000);
-}
-
-function hrEmploymentTimeline(person) {
-  if (person.employment_type === "permanent") {
-    const years = hrServiceYears(person.hire_date);
-    return {
-      label: "ANTIGÜEDAD",
-      title: years + (years === 1 ? " año" : " años"),
-      detail: person.hire_date ? "Alta " + formatDateOnly(person.hire_date) : "Sin fecha de alta",
-    };
-  }
-  const endDate = person.employment_type === "temporary" ? person.contract_end_date : person.service_end_date;
-  const label = ({
-    temporary: "FIN DE CONTRATO",
-    contractor: "FIN DE SERVICIO",
-    intern: "FIN DE PRÁCTICAS",
-  })[person.employment_type] || "RELACIÓN LABORAL";
-  const remainingDays = hrDaysUntil(endDate);
-  let detail = hrEmployment(person.employment_type);
-  if (remainingDays != null) {
-    detail = remainingDays < 0 ? "Periodo concluido"
-      : remainingDays === 0 ? "Concluye hoy"
-        : remainingDays + (remainingDays === 1 ? " día restante" : " días restantes");
-  }
-  return {
-    label,
-    title: endDate ? formatDateOnly(endDate) : "Sin fecha definida",
-    detail,
-  };
-}
-
-function hrPlannedShiftHours(shift, startDate, endDate) {
-  if (!shift || !startDate || !endDate || endDate < startDate) return 0;
-  const schedule = hrParsedShiftSchedule(shift.schedule_json);
-  const groups = schedule.length ? schedule : [{
-    days: String(shift.work_days || "").split(",").filter(Boolean),
-    periods: [{ start: shift.start_time, end: shift.end_time }],
-  }];
-  const dayKeys = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-  const cursor = new Date(startDate + "T00:00:00Z");
-  const limit = new Date(endDate + "T00:00:00Z");
-  let minutes = 0;
-  let iterations = 0;
-  while (cursor <= limit && iterations < 3660) {
-    const day = dayKeys[cursor.getUTCDay()];
-    groups.filter((group) => group.days?.includes(day)).forEach((group) => {
-      (group.periods || []).forEach((period) => {
-        const [startHour, startMinute] = String(period.start || "").split(":").map(Number);
-        const [endHour, endMinute] = String(period.end || "").split(":").map(Number);
-        if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) return;
-        let duration = endHour * 60 + endMinute - (startHour * 60 + startMinute);
-        if (duration <= 0) duration += 1440;
-        minutes += Math.min(duration, 1440);
-      });
-    });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-    iterations += 1;
-  }
-  return Math.round(minutes / 60 * 100) / 100;
-}
-
-function bindHrEmploymentRules(form, vacationPlans, workShifts) {
-  const employmentSelect = $('[name="employmentType"]', form);
-  const hireDateInput = $('[name="hireDate"]', form);
-  const shiftSelect = $('[name="workShiftId"]', form);
-  const shiftSummary = $("[data-hr-shift-summary]", form) || $("#hr-edit-shift-summary", form) || $("#hr-shift-summary", form);
-  const vacationSummary = $("[data-hr-vacation-plan]", form) || $("#hr-edit-vacation-plan", form) || $("#hr-vacation-plan-preview", form);
-  const senioritySummary = $("[data-hr-seniority]", form) || $("#hr-edit-seniority", form) || $("#hr-seniority-preview", form);
-  const shiftField = shiftSelect.closest("label");
-  const shiftSummaryField = shiftSummary.closest(".hr-derived-field");
-  const updateShift = () => {
-    if (employmentSelect.value === "contractor") {
-      shiftSummary.textContent = "No aplica para contratistas";
-      return;
-    }
-    const shift = workShifts.find((row) => row.id === Number(shiftSelect.value));
-    shiftSummary.textContent = shift ? hrShiftCatalogSummary(shift) : "Sin turno seleccionado";
-  };
-  const update = () => {
-    const type = employmentSelect.value;
-    $$("[data-employment-section]", form).forEach((section) => {
-      const active = section.dataset.employmentSection === type;
-      section.classList.toggle("hidden", !active);
-      $$("input, textarea, select", section).forEach((input) => {
-        input.disabled = !active;
-        input.required = active && input.hasAttribute("data-employment-required");
-      });
-    });
-    const contractor = type === "contractor";
-    shiftField.classList.toggle("hidden", contractor);
-    shiftSummaryField.classList.toggle("hidden", contractor);
-    if (contractor) {
-      if (shiftSelect.value) shiftSelect.dataset.previousValue = shiftSelect.value;
-      shiftSelect.value = "";
-      shiftSelect.disabled = true;
-    } else {
-      shiftSelect.disabled = false;
-      if (!shiftSelect.value && shiftSelect.dataset.previousValue) shiftSelect.value = shiftSelect.dataset.previousValue;
-    }
-    if (type === "permanent") {
-      const years = hrServiceYears(hireDateInput.value);
-      const plan = hrAutomaticVacationPlan(vacationPlans, hireDateInput.value);
-      vacationSummary.textContent = plan
-        ? plan.name + " · " + inventoryNumber(plan.annual_days) + " días"
-        : "0 días · Disponible al cumplir 1 año";
-      senioritySummary.textContent = years + (years === 1 ? " año" : " años");
-    } else {
-      vacationSummary.textContent = "No aplica · Sin vacaciones";
-      senioritySummary.textContent = "No genera antigüedad";
-    }
-    if (type === "contractor") {
-      const section = $('[data-employment-section="contractor"]', form);
-      const start = $('[name="serviceStartDate"]', section)?.value;
-      const end = $('[name="serviceEndDate"]', section)?.value;
-      $("strong", $("[data-contractor-days]", section)).textContent = inventoryNumber(hrServiceDayCount(start, end));
-    }
-    if (type === "intern") {
-      const section = $('[data-employment-section="intern"]', form);
-      const start = $('[name="serviceStartDate"]', section)?.value;
-      const end = $('[name="serviceEndDate"]', section)?.value;
-      const requiredHours = Number($('[name="requiredServiceHours"]', section)?.value || 0);
-      const shift = workShifts.find((row) => row.id === Number(shiftSelect.value));
-      const plannedHours = hrPlannedShiftHours(shift, start, end);
-      $("[data-intern-planned-hours]", section).textContent = inventoryNumber(plannedHours);
-      const currentDate = todayInput();
-      const elapsedEnd = start && currentDate >= start ? (end && currentDate > end ? end : currentDate) : "";
-      const scheduledHours = hrPlannedShiftHours(shift, start, elapsedEnd);
-      const completed = Math.min(requiredHours, scheduledHours);
-      $("[data-intern-completed-hours]", section).textContent = inventoryNumber(completed);
-      $("[data-intern-remaining-hours]", section).textContent = inventoryNumber(Math.max(0, requiredHours - completed));
-      $("[data-intern-progress]", section).textContent = inventoryNumber(requiredHours > 0 ? Math.min(100, Math.round(completed / requiredHours * 100)) : 0) + "%";
-    }
-    updateShift();
-  };
-  employmentSelect.onchange = update;
-  hireDateInput.onchange = update;
-  shiftSelect.onchange = update;
-  $$('[name="serviceStartDate"], [name="serviceEndDate"], [name="requiredServiceHours"]', form)
-    .forEach((input) => { input.onchange = update; input.oninput = update; });
-  update();
-}
-
-function hrLeaveActions(row) {
-  if (row.status === "submitted" && hasPermission("hr.approve")) return '<button class="link-button" data-hr-action="approve" data-hr-id="' + row.id + '">Aprobar</button><button class="link-button danger-text" data-hr-action="reject" data-hr-id="' + row.id + '">Rechazar</button>';
-  if (row.status === "approved" && hasPermission("hr.operate")) return '<button class="link-button" data-hr-action="close" data-hr-id="' + row.id + '">Cerrar</button>';
-  return "";
-}
-
-const HR_SHIFT_DAYS = [["mon", "Lun"], ["tue", "Mar"], ["wed", "Mié"], ["thu", "Jue"], ["fri", "Vie"], ["sat", "Sáb"], ["sun", "Dom"]];
-
-function normalizeHrTimeEntry(value) {
-  const clean = String(value || "").trim().replace(/[^\d:]/g, "");
-  if (!clean) return "";
-  let hours;
-  let minutes;
-  if (clean.includes(":")) {
-    [hours, minutes = "00"] = clean.split(":");
-  } else {
-    const digits = clean.slice(0, 4);
-    hours = digits.length <= 2 ? digits : digits.slice(0, -2);
-    minutes = digits.length <= 2 ? "00" : digits.slice(-2);
-  }
-  const hourNumber = Number(hours);
-  const minuteNumber = Number(minutes);
-  if (!Number.isInteger(hourNumber) || !Number.isInteger(minuteNumber) || hourNumber > 23 || minuteNumber > 59) return clean;
-  return String(hourNumber).padStart(2, "0") + ":" + String(minuteNumber).padStart(2, "0");
-}
-
-function addHrShiftScheduleGroup(container, selectedDays = [], periods = []) {
-  if ($$("[data-shift-group]", container).length >= 7) return toast("Un turno admite hasta siete horarios distintos.", "error");
-  const section = document.createElement("section");
-  section.className = "hr-shift-schedule-card";
-  section.dataset.shiftGroup = "";
-  section.innerHTML = '<header><div><strong>Horario semanal</strong><small>Selecciona los días que comparten estas horas.</small></div><button type="button" data-remove-shift-group aria-label="Quitar este horario">×</button></header><fieldset class="hr-work-days"><legend>Días aplicables</legend>' +
-    HR_SHIFT_DAYS.map(([value, label]) => '<label><input type="checkbox" data-shift-day value="' + value + '" ' + (selectedDays.includes(value) ? "checked" : "") + ' /><span>' + label + '</span></label>').join("") +
-    '</fieldset><div class="hr-shift-period-grid"><label>Entrada<input class="hr-time-entry" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\\d|2[0-3]):[0-5]\\d" placeholder="09:00" data-shift-time="start-1" required /></label><label>Salida<input class="hr-time-entry" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\\d|2[0-3]):[0-5]\\d" placeholder="14:00" data-shift-time="end-1" required /></label><label>Regreso <small>Opcional</small><input class="hr-time-entry" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\\d|2[0-3]):[0-5]\\d" placeholder="16:00" data-shift-time="start-2" /></label><label>Salida final <small>Opcional</small><input class="hr-time-entry" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\\d|2[0-3]):[0-5]\\d" placeholder="19:00" data-shift-time="end-2" /></label></div>';
-  container.append(section);
-  const first = periods[0] || {};
-  const second = periods[1] || {};
-  $('[data-shift-time="start-1"]', section).value = first.start || "";
-  $('[data-shift-time="end-1"]', section).value = first.end || "";
-  $('[data-shift-time="start-2"]', section).value = second.start || "";
-  $('[data-shift-time="end-2"]', section).value = second.end || "";
-  $$("[data-shift-time]", section).forEach((input) => {
-    input.addEventListener("input", () => {
-      input.value = input.value.replace(/[^\d:]/g, "").slice(0, 5);
-      input.setCustomValidity("");
-    });
-    input.addEventListener("blur", () => {
-      input.value = normalizeHrTimeEntry(input.value);
-      input.setCustomValidity(input.value && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.value) ? "Usa una hora válida en formato HH:MM." : "");
-    });
-  });
-  $("[data-remove-shift-group]", section).onclick = () => {
-    if ($$("[data-shift-group]", container).length === 1) return toast("El turno debe conservar al menos un horario.", "error");
-    section.remove();
-  };
-}
-
-function readHrShiftSchedule(form) {
-  return $$("[data-shift-group]", form).map((group) => {
-    const value = (name) => normalizeHrTimeEntry($('[data-shift-time="' + name + '"]', group).value);
-    const periods = [{ start: value("start-1"), end: value("end-1") }];
-    if (value("start-2") || value("end-2")) periods.push({ start: value("start-2"), end: value("end-2") });
-    return {
-      days: $$("[data-shift-day]:checked", group).map((input) => input.value),
-      periods,
-    };
-  });
-}
-
-function hrCatalogUsage(field, id) {
-  return (state.hrControl?.people || []).filter((person) => Number(person[field]) === Number(id)).length;
-}
-
-function hrShiftScheduleGroups(shift) {
+async function openPayrollCfdiDetail(id) {
   try {
-    const groups = JSON.parse(shift?.schedule_json || "[]");
-    if (Array.isArray(groups) && groups.length) return groups;
-  } catch {}
-  return [{
-    days: String(shift?.work_days || "").split(",").filter(Boolean),
-    periods: [{ start: shift?.start_time || "", end: shift?.end_time || "" }],
-  }];
+    const { receipt } = await api(`/api/payroll/cfdi/receipts/${id}`);
+    $("#entity-modal-content").innerHTML = `<div><div class="modal-head"><div><span class="eyebrow">${escapeHtml(receipt.uuid)}</span><h2>${escapeHtml(receipt.employee_name || receipt.receiver_name || "CFDI sin relacionar")}</h2><p class="muted">Pago ${formatDateOnly(receipt.payment_date)} · ${money(receipt.total, receipt.currency_code)}</p></div><button type="button" data-close-modal>×</button></div><section class="metrics">${metricCard("Percepciones", receipt.total_perceptions, receipt.currency_code, "+", true)}${metricCard("Deducciones", receipt.total_deductions, receipt.currency_code, "−")}${metricCard("Otros pagos", receipt.total_other_payments, receipt.currency_code, "+")}</section><div class="card-grid"><article class="info-card"><small>RFC receptor</small><strong>${escapeHtml(receipt.receiver_rfc)}</strong></article><article class="info-card"><small>CURP receptor</small><strong>${escapeHtml(receipt.receiver_curp || "Sin registrar")}</strong></article><article class="info-card"><small>ID laboral XML</small><strong>${escapeHtml(receipt.receiver_employee_number || "Sin registrar")}</strong></article><article class="info-card"><small>Asociación</small><strong>${escapeHtml(receipt.association_status)}</strong></article></div><div class="panel-head"><div><h3>Archivos privados</h3><p>La descarga queda registrada en auditoría.</p></div></div><div class="compact-list">${receipt.files.map((file) => `<div class="sales-control-row"><div><strong>${escapeHtml(file.original_name)}</strong><small>${escapeHtml(file.file_type.toUpperCase())} · ${formatBytes(file.size_bytes)}</small></div><button class="link-button" data-payroll-download="${file.id}" data-name="${escapeAttribute(file.original_name)}">Descargar</button></div>`).join("")}</div><div class="modal-actions"><button class="button primary" type="button" data-close-modal>Cerrar</button></div></div>`;
+    $$('[data-payroll-download]', $("#entity-modal-content")).forEach((button) => button.onclick = () => downloadAuthenticatedFile(`/api/payroll/cfdi/receipts/${id}/files/${button.dataset.payrollDownload}`, button.dataset.name));
+    entityDialog.showModal();
+  } catch (error) { toast(error.message, "error"); }
 }
 
-function hrCatalogRecord(row, type, summary, linked) {
-  return '<li class="hr-catalog-record"><div><strong>' + escapeHtml(row.name) + '</strong><small>' + escapeHtml(summary) + '</small></div><div class="hr-catalog-record-meta"><span>' + escapeHtml(row.code) + '</span><small>' + linked + ' colaborador(es)</small><button type="button" data-edit-hr-catalog="' + type + '" data-record-id="' + row.id + '">Editar</button></div></li>';
-}
-
-function openHrCatalogsModal(section = "positions", confirmation = "", editingId = null) {
-  const o = state.hrOptions || {};
-  const jobPositions = Array.isArray(o.jobPositions) ? o.jobPositions : [];
-  const workShifts = Array.isArray(o.workShifts) ? o.workShifts : [];
-  const vacationPlans = Array.isArray(o.vacationPlans) ? o.vacationPlans : [];
-  const sections = {
-    positions: { number: "01", label: "Puestos", hint: "Funciones y responsabilidades", records: jobPositions },
-    shifts: { number: "02", label: "Turnos y horarios", hint: "Jornadas y calendarios", records: workShifts },
-    vacations: { number: "03", label: "Planes de vacaciones", hint: "Días según antigüedad", records: vacationPlans },
-  };
-  if (!sections[section]) section = "positions";
-  const active = sections[section];
-  const editing = editingId == null ? null : active.records.find((row) => row.id === Number(editingId));
-  $("#entity-modal-content").classList.add("wide", "hr-catalog-modal");
-
-  const submenu = Object.entries(sections).map(([key, item]) =>
-    '<button type="button" class="' + (section === key ? "active" : "") + '" data-hr-catalog-section="' + key + '"><span>' + item.number + '</span><div><strong>' + item.label + '</strong><small>' + item.hint + '</small></div><b>' + item.records.length + '</b></button>'
-  ).join("");
-
-  let rows = "";
-  let form = "";
-  if (section === "positions") {
-    rows = jobPositions.map((row) => hrCatalogRecord(row, "positions", row.description || "Sin descripción",
-      hrCatalogUsage("position_id", row.id))).join("");
-    form = '<form id="hr-position-form" class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR PUESTO" : "NUEVO PUESTO") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar puesto") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><label>Nombre del puesto<input name="name" maxlength="120" required placeholder="Ej. Supervisor de producción" value="' + escapeAttribute(editing?.name || "") + '" /></label><label>Descripción<textarea name="description" rows="3" maxlength="500">' + escapeHtml(editing?.description || "") + '</textarea></label><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Agregar puesto") + '</button></form>';
-  } else if (section === "vacations") {
-    rows = vacationPlans.map((row) => hrCatalogRecord(row, "vacations",
-      inventoryNumber(row.annual_days) + " días · " + hrVacationSeniority(row),
-      hrCatalogUsage("vacation_plan_id", row.id))).join("");
-    form = '<form id="hr-vacation-plan-form" class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR PLAN" : "NUEVO PLAN") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar plan de vacaciones") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><label>Nombre del plan<input name="name" maxlength="120" required placeholder="Ej. Plan 5 años" value="' + escapeAttribute(editing?.name || "") + '" /></label><div class="form-grid compact"><label>Días anuales<input name="annualDays" type="number" min="0.5" step="0.5" required value="' + escapeAttribute(editing?.annual_days || "") + '" /></label><label>Desde (años)<input name="minServiceYears" type="number" min="1" max="100" required value="' + escapeAttribute(editing?.min_service_years ?? 1) + '" /></label><label>Hasta (años)<input name="maxServiceYears" type="number" min="1" max="100" placeholder="Sin límite" value="' + escapeAttribute(editing?.max_service_years ?? "") + '" /></label></div><label>Descripción<textarea name="description" rows="3" maxlength="500">' + escapeHtml(editing?.description || "") + '</textarea></label><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Agregar plan") + '</button></form>';
-  } else {
-    rows = workShifts.map((row) => hrCatalogRecord(row, "shifts", hrShiftCatalogSummary(row),
-      hrCatalogUsage("work_shift_id", row.id))).join("");
-    form = '<form id="hr-shift-form" class="hr-catalog-editor hr-shift-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR TURNO" : "NUEVO TURNO") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Configurar turno") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><div class="hr-shift-form-head"><label>Nombre del turno<input name="name" maxlength="120" required placeholder="Ej. Administrativo con sábado" value="' + escapeAttribute(editing?.name || "") + '" /></label><div><strong>CALENDARIO SEMANAL</strong><small>Agrupa días con el mismo horario y agrega otra jornada cuando sea necesario.</small></div></div><div id="hr-shift-schedule" class="hr-shift-schedule"></div><button class="button ghost hr-add-schedule" type="button" data-add-shift-schedule>＋ Agregar otro horario</button><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Guardar turno") + '</button></form>';
-  }
-
-  $("#entity-modal-content").innerHTML = '<div class="modal-head"><div><span class="eyebrow">CONFIGURACIÓN DE PERSONAL</span><h2>Catálogos</h2></div><button type="button" data-close-modal>×</button></div>' +
-    (confirmation ? '<div class="hr-catalog-confirmation" role="status"><span>✓</span><div><strong>Información actualizada</strong><small>' + escapeHtml(confirmation) + '</small></div></div>' : "") +
-    '<div class="hr-catalog-workspace"><nav class="hr-catalog-submenu" aria-label="Catálogos laborales">' + submenu + '</nav><section class="hr-catalog-stage"><header><div><span class="eyebrow">' + active.number + ' · CATÁLOGO</span><h3>' + active.label + '</h3><p>' + active.hint + '. Los cambios se reflejan en los expedientes relacionados.</p></div><strong>' + active.records.length + ' registro(s)</strong></header><ul class="hr-catalog-list">' + (rows || '<li class="empty-row">Aún no hay registros en este catálogo.</li>') + '</ul>' + form + '</section></div><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cerrar</button></div>';
-
-  $$("[data-hr-catalog-section]").forEach((button) => button.onclick = () =>
-    openHrCatalogsModal(button.dataset.hrCatalogSection)
-  );
-  $$("[data-edit-hr-catalog]").forEach((button) => button.onclick = () =>
-    openHrCatalogsModal(button.dataset.editHrCatalog, "", Number(button.dataset.recordId))
-  );
-  $("[data-cancel-hr-catalog-edit]")?.addEventListener("click", () => openHrCatalogsModal(section));
-
-  if (section === "positions") {
-    bindHrCatalogForm("#hr-position-form", "/api/hr/job-positions", "Puesto", section, null, editing?.id);
-  } else if (section === "vacations") {
-    bindHrCatalogForm("#hr-vacation-plan-form", "/api/hr/vacation-plans", "Plan", section, null, editing?.id);
-  } else {
-    const shiftSchedule = $("#hr-shift-schedule");
-    const groups = editing ? hrShiftScheduleGroups(editing) : [{ days: ["mon", "tue", "wed", "thu", "fri"], periods: [] }];
-    groups.forEach((group) => addHrShiftScheduleGroup(shiftSchedule, group.days, group.periods));
-    $("[data-add-shift-schedule]").onclick = () => addHrShiftScheduleGroup(shiftSchedule);
-    bindHrCatalogForm("#hr-shift-form", "/api/hr/work-shifts", "Turno", section, (catalogForm, body) => {
-      body.scheduleGroups = readHrShiftSchedule(catalogForm);
-    }, editing?.id);
-  }
-  if (!entityDialog.open) entityDialog.showModal();
-}
-
-function bindHrCatalogForm(selector, endpoint, label, section, prepare, recordId = null) {
-  $(selector).onsubmit = async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget, box = $(".form-error", form), body = Object.fromEntries(new FormData(form));
-    const submit = $('button[type="submit"]', form);
-    prepare?.(form, body);
-    submit.disabled = true;
-    try {
-      const result = await api(endpoint + (recordId ? "/" + recordId : ""), {
-        method: recordId ? "PATCH" : "POST",
-        body,
-      });
-      const [options, control] = await Promise.all([api("/api/hr/options"), api("/api/hr/control")]);
-      state.hrOptions = options;
-      state.hrControl = control;
-      toast(label + " " + result.folio + (recordId ? " actualizado." : " guardado."));
-      openHrCatalogsModal(section, label + " " + result.folio + " ya está integrado con Recursos Humanos.");
-    } catch (error) {
-      submit.disabled = false;
-      box.textContent = error.message;
-      box.classList.remove("hidden");
-    }
-  };
-}
-
-function showHrPersonConfirmation(result, fullName, editing = false) {
-  const card = $("#entity-modal-content");
-  card.classList.remove("wide", "hr-person-modal");
-  card.classList.add("compact");
-  card.innerHTML = '<section class="hr-save-confirmation" role="status"><span class="hr-save-check" aria-hidden="true">✓</span><span class="eyebrow">' + (editing ? "EXPEDIENTE ACTUALIZADO" : "EXPEDIENTE GUARDADO") + '</span><h2>' + (editing ? "Cambios guardados" : "Personal registrado") + '</h2><p><strong>' + escapeHtml(fullName) + '</strong> ' + (editing ? "ya tiene sus datos actualizados en Recursos Humanos." : "ya está disponible en Recursos Humanos.") + '</p><div class="hr-save-folio"><span>FOLIO DEL TRABAJADOR</span><strong>' + escapeHtml(result.folio) + '</strong></div><button class="button primary wide" type="button" data-close-modal>Continuar en Recursos Humanos <span>→</span></button></section>';
-}
-
-function openHrDeactivateModal(employeeId) {
-  const person = state.hrControl?.people?.find((row) => row.id === Number(employeeId));
-  if (!person) return toast("No se encontró el expediente del trabajador.", "error");
-  const card = $("#entity-modal-content");
-  card.classList.remove("wide", "hr-person-modal");
-  card.classList.add("compact");
-  card.innerHTML = '<section class="hr-deactivate-confirmation"><span class="hr-deactivate-symbol" aria-hidden="true">!</span><span class="eyebrow">BAJA DE PERSONAL</span><h2>¿Dar de baja al trabajador?</h2><p><strong>' + escapeHtml(person.full_name) + '</strong> dejará de aparecer como personal activo. Su expediente, movimientos e historial no se eliminarán.</p><div class="hr-save-folio"><span>FOLIO DEL TRABAJADOR</span><strong>' + escapeHtml(person.employee_number) + '</strong></div><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button danger" type="button" data-confirm-deactivate>Confirmar baja</button></div></section>';
-  $("[data-confirm-deactivate]").onclick = async (event) => {
-    const button = event.currentTarget;
-    const box = $(".form-error", card);
-    button.disabled = true;
-    try {
-      const result = await api("/api/hr/people/" + person.id + "/action", { method: "POST", body: { action: "deactivate" } });
-      await renderHr();
-      toast("Baja de " + result.folio + " registrada.");
-      card.innerHTML = '<section class="hr-save-confirmation" role="status"><span class="hr-save-check" aria-hidden="true">✓</span><span class="eyebrow">BAJA REGISTRADA</span><h2>Trabajador inactivo</h2><p><strong>' + escapeHtml(result.fullName) + '</strong> fue dado de baja correctamente. El expediente y su historial permanecen disponibles.</p><div class="hr-save-folio"><span>FOLIO DEL TRABAJADOR</span><strong>' + escapeHtml(result.folio) + '</strong></div><button class="button primary wide" type="button" data-close-modal>Continuar en Recursos Humanos <span>→</span></button></section>';
-    } catch (error) {
-      button.disabled = false;
-      box.textContent = error.message;
-      box.classList.remove("hidden");
-    }
-  };
-  entityDialog.showModal();
-}
-
-function openHrEditPersonModal(employeeId) {
-  const person = state.hrControl?.people?.find((row) => row.id === Number(employeeId));
-  if (!person) return toast("No se encontró el expediente del trabajador.", "error");
-  const o = state.hrOptions || {};
-  const selectedOptions = (records, selectedId, emptyLabel, label) => '<option value="">' + emptyLabel + '</option>' + records.map((row) => '<option value="' + row.id + '" ' + (row.id === Number(selectedId) ? "selected" : "") + '>' + escapeHtml(label(row)) + '</option>').join("");
-  const areas = selectedOptions(o.areas || [], person.area_id, "Sin área", (row) => row.code + " · " + row.name);
-  const positions = selectedOptions(o.jobPositions || [], person.position_id, "Sin puesto asignado", (row) => row.name);
-  const shifts = selectedOptions(o.workShifts || [], person.work_shift_id, "Sin turno asignado", (row) => row.name);
-  const photoUrl = person.photo_filename ? API_BASE + "/api/hr/people/" + person.id + "/photo?v=" + encodeURIComponent(person.updated_at || Date.now()) : "";
-  const selected = (value, expected) => value === expected ? "selected" : "";
-  const card = $("#entity-modal-content");
-  card.classList.add("wide", "hr-person-modal");
-  card.innerHTML = '<form id="hr-edit-form" class="hr-person-form"><div class="modal-head hr-collaborator-head"><div><h2>Colaborador</h2><strong class="hr-collaborator-folio">' + escapeHtml(person.employee_number) + '</strong></div><button type="button" data-close-modal aria-label="Cerrar">×</button></div>' +
-    '<div class="hr-person-registration"><aside class="hr-photo-column"><span class="eyebrow">FOTOGRAFÍA</span><label class="hr-photo-picker" for="hr-edit-photo-input"><img id="hr-edit-photo-preview" class="' + (photoUrl ? "" : "hidden") + '" src="' + escapeAttribute(photoUrl) + '" alt="Fotografía de ' + escapeAttribute(person.full_name) + '" /><span id="hr-edit-photo-placeholder" class="' + (photoUrl ? "hidden" : "") + '"><b>＋</b><strong>' + (photoUrl ? "Reemplazar fotografía" : "Agregar fotografía") + '</strong><small>JPG, PNG o WebP · Máximo 3 MB</small></span><input id="hr-edit-photo-input" type="file" accept="image/jpeg,image/png,image/webp" /></label><p>Haz clic sobre la imagen para seleccionar una fotografía nueva.</p><label class="check-option hr-remove-photo"><input name="removePhoto" type="checkbox" ' + (photoUrl ? "" : "disabled") + ' /><span><strong>Quitar fotografía</strong><small>El expediente conservará sus demás datos.</small></span></label></aside><section class="hr-registration-fields"><div class="hr-registration-section"><span>INFORMACIÓN GENERAL</span><div class="form-grid"><label>Nombre completo<input name="fullName" maxlength="180" required value="' + escapeAttribute(person.full_name) + '" /></label><label>Puesto<select name="positionId">' + positions + '</select></label><label>Área<select name="areaId">' + areas + '</select></label><label>Fecha de alta<input id="hr-edit-hire-date" name="hireDate" type="date" value="' + escapeAttribute(person.hire_date || "") + '" /></label><label>Teléfono<input name="phone" maxlength="40" value="' + escapeAttribute(person.phone || "") + '" /></label><label>Correo electrónico<input name="email" type="email" maxlength="180" value="' + escapeAttribute(person.email || "") + '" /></label><div class="hr-derived-field"><span>Plan de vacaciones</span><strong id="hr-edit-vacation-plan">Asignación automática</strong><small>No se edita: depende de la antigüedad.</small></div><div class="hr-derived-field"><span>Antigüedad</span><strong id="hr-edit-seniority">0 años</strong><small>Calculada desde la fecha de alta.</small></div></div></div><div class="hr-registration-section"><span>CONDICIONES LABORALES</span><div class="form-grid hr-labor-grid"><label>Tipo de contratación<select name="employmentType"><option value="permanent" ' + selected(person.employment_type, "permanent") + '>Permanente</option><option value="temporary" ' + selected(person.employment_type, "temporary") + '>Temporal</option><option value="contractor" ' + selected(person.employment_type, "contractor") + '>Contratista</option><option value="intern" ' + selected(person.employment_type, "intern") + '>Practicante</option></select><small class="field-help">Define la relación laboral del trabajador.</small></label><label>Estado<select name="status"><option value="active" ' + selected(person.status, "active") + '>Activo</option><option value="leave" ' + selected(person.status, "leave") + '>Ausente</option><option value="inactive" ' + selected(person.status, "inactive") + '>Inactivo</option></select><small class="field-help">Controla si aparece disponible para operar.</small></label><label>Turno<select name="workShiftId" id="hr-edit-work-shift">' + shifts + '</select><small class="field-help">Selecciona un turno configurado.</small></label><div class="hr-derived-field"><span>Horario asignado</span><strong id="hr-edit-shift-summary">Sin turno seleccionado</strong><small>Días, entradas y salidas del turno.</small></div></div></div><div class="hr-registration-section"><span>CONTACTO DE EMERGENCIA</span><div class="form-grid"><label>Nombre del contacto<input name="emergencyContact" maxlength="180" value="' + escapeAttribute(person.emergency_contact || "") + '" /></label><label>Teléfono de emergencia<input name="emergencyPhone" maxlength="40" value="' + escapeAttribute(person.emergency_phone || "") + '" /></label><label class="span-two">Notas<textarea name="notes" rows="3" placeholder="Información adicional del expediente">' + escapeHtml(person.profile_notes || "") + '</textarea></label></div></div></section></div><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar cambios</button></div></form>';
-  $(".hr-labor-grid", card).insertAdjacentHTML("beforeend", hrEmploymentDetailsMarkup(person));
-  const photoInput = $("#hr-edit-photo-input");
-  const photoPreview = $("#hr-edit-photo-preview");
-  const photoPlaceholder = $("#hr-edit-photo-placeholder");
-  const removePhoto = $('[name="removePhoto"]', card);
-  bindHrEmploymentRules($("#hr-edit-form"), o.vacationPlans || [], o.workShifts || []);
-  photoInput.onchange = () => {
-    const file = photoInput.files?.[0];
-    if (!file) return;
-    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 3 * 1024 * 1024) {
-      photoInput.value = "";
-      return toast("La fotografía debe ser JPG, PNG o WebP y pesar menos de 3 MB.", "error");
-    }
-    photoPreview.src = URL.createObjectURL(file);
-    photoPreview.classList.remove("hidden");
-    photoPlaceholder.classList.add("hidden");
-    removePhoto.checked = false;
-  };
-  removePhoto.onchange = () => {
-    if (removePhoto.checked) {
-      photoInput.value = "";
-      photoPreview.classList.add("hidden");
-      photoPlaceholder.classList.remove("hidden");
-    } else if (photoUrl) {
-      photoPreview.src = photoUrl;
-      photoPreview.classList.remove("hidden");
-      photoPlaceholder.classList.add("hidden");
-    }
-  };
-  $("#hr-edit-form").onsubmit = async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const box = $(".form-error", form);
-    const submit = $('button[type="submit"]', form);
-    const body = Object.fromEntries(new FormData(form));
-    body.removePhoto = removePhoto.checked;
-    const file = photoInput.files?.[0];
-    box.classList.add("hidden");
-    submit.disabled = true;
-    try {
-      if (file) {
-        body.photoBase64 = await fileToBase64(file);
-        body.photoName = file.name;
-        body.photoMime = file.type;
-      }
-      const result = await api("/api/hr/people/" + person.id, { method: "PATCH", body });
-      state.hrOptions = null;
-      toast("Expediente " + result.folio + " actualizado.");
-      showHrPersonConfirmation(result, body.fullName, true);
-      try { await renderHr(); } catch { toast("El expediente se guardó, pero el tablero no pudo actualizarse.", "error"); }
-    } catch (error) {
-      submit.disabled = false;
-      box.textContent = error.message;
-      box.classList.remove("hidden");
-    }
-  };
-  entityDialog.showModal();
-}
-
-function openHrModal(type, employeeId = null) {
-  if (type === "edit") return openHrEditPersonModal(employeeId);
-  const o = state.hrOptions || {};
-  const employeeRecords = Array.isArray(o.employees) ? o.employees : [];
-  const areaRecords = Array.isArray(o.areas) ? o.areas : [];
-  const positionRecords = Array.isArray(o.jobPositions) ? o.jobPositions : [];
-  const shiftRecords = Array.isArray(o.workShifts) ? o.workShifts : [];
-  const vacationRecords = Array.isArray(o.vacationPlans) ? o.vacationPlans : [];
-  const areas = '<option value="">Sin área</option>' + areaRecords.map((r) => '<option value="' + r.id + '">' + escapeHtml(r.code + " · " + r.name) + '</option>').join("");
-  const positions = '<option value="">Sin puesto asignado</option>' + positionRecords.map((r) => '<option value="' + r.id + '">' + escapeHtml(r.name) + '</option>').join("");
-  const shifts = '<option value="">Sin turno asignado</option>' + shiftRecords.map((r) => '<option value="' + r.id + '">' + escapeHtml(r.name) + '</option>').join("");
-  if (type === "person") {
-    $("#entity-modal-content").classList.add("wide", "hr-person-modal");
-    $("#entity-modal-content").innerHTML = '<form id="hr-form" class="hr-person-form"><div class="modal-head"><div><span class="eyebrow">RECURSOS HUMANOS</span><h2>Nuevo personal</h2><p class="muted">Crea una ficha completa con fotografía y datos laborales.</p></div><button type="button" data-close-modal>×</button></div>' + automaticCodeBanner("E-00000", true) + '<div class="hr-person-registration"><aside class="hr-photo-column"><span class="eyebrow">FOTOGRAFÍA</span><label class="hr-photo-picker" for="hr-photo-input"><img id="hr-photo-preview" class="hidden" alt="Vista previa de la fotografía" /><span id="hr-photo-placeholder"><b>＋</b><strong>Agregar fotografía</strong><small>JPG, PNG o WebP · Máximo 3 MB</small></span><input id="hr-photo-input" type="file" accept="image/jpeg,image/png,image/webp" /></label><p>Utiliza una fotografía frontal con fondo claro para identificar fácilmente al trabajador.</p></aside><section class="hr-registration-fields"><div class="hr-registration-section"><span>INFORMACIÓN GENERAL</span><div class="form-grid"><label>Nombre completo<input name="fullName" maxlength="180" required /></label><label>Puesto<select name="positionId">' + positions + '</select></label><label>Área<select name="areaId">' + areas + '</select></label><label>Fecha de alta<input id="hr-hire-date" name="hireDate" type="date" /></label><label>Teléfono<input name="phone" maxlength="40" /></label><label>Correo electrónico<input name="email" type="email" maxlength="180" /></label><div class="hr-derived-field"><span>Plan de vacaciones</span><strong id="hr-vacation-plan-preview">Asignación automática</strong><small>No se captura: depende de la antigüedad.</small></div><div class="hr-derived-field"><span>Antigüedad</span><strong id="hr-seniority-preview">0 años</strong><small>Calculada desde la fecha de alta.</small></div></div></div><div class="hr-registration-section"><span>CONDICIONES LABORALES</span><div class="form-grid hr-labor-grid"><label>Tipo de contratación<select name="employmentType"><option value="permanent">Permanente</option><option value="temporary">Temporal</option><option value="contractor">Contratista</option><option value="intern">Practicante</option></select><small class="field-help">Define la relación laboral del trabajador.</small></label><label>Turno<select name="workShiftId" id="hr-work-shift">' + shifts + '</select><small class="field-help">Selecciona un turno configurado.</small></label><div class="hr-derived-field"><span>Horario asignado</span><strong id="hr-shift-summary">Sin turno seleccionado</strong><small>Días, entrada, salida y descanso.</small></div></div></div><div class="hr-registration-section"><span>CONTACTO DE EMERGENCIA</span><div class="form-grid"><label>Nombre del contacto<input name="emergencyContact" maxlength="180" /></label><label>Teléfono de emergencia<input name="emergencyPhone" maxlength="40" /></label><label class="span-two">Notas<textarea name="notes" rows="3" placeholder="Información adicional del expediente"></textarea></label></div></div></section></div><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar expediente</button></div></form>';
-    $(".hr-labor-grid", $("#hr-form")).insertAdjacentHTML("beforeend", hrEmploymentDetailsMarkup());
-    const photoInput = $("#hr-photo-input");
-    bindHrEmploymentRules($("#hr-form"), vacationRecords, shiftRecords);
-    photoInput.onchange = () => {
-      const file = photoInput.files?.[0], preview = $("#hr-photo-preview"), placeholder = $("#hr-photo-placeholder");
-      if (!file) { preview.classList.add("hidden"); placeholder.classList.remove("hidden"); return; }
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 3 * 1024 * 1024) {
-        photoInput.value = ""; toast("La fotografía debe ser JPG, PNG o WebP y pesar menos de 3 MB.", "error"); return;
-      }
-      preview.src = URL.createObjectURL(file);
-      preview.classList.remove("hidden");
-      placeholder.classList.add("hidden");
-    };
-    $("#hr-form").onsubmit = async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget, box = $(".form-error", form), body = Object.fromEntries(new FormData(form));
-      const submit = $('button[type="submit"]', form);
-      delete body[""];
-      const file = photoInput.files?.[0];
-      box.classList.add("hidden");
-      submit.disabled = true;
+async function openPayrollCfdiAssociation(id) {
+  try {
+    const options = state.hrOptions || await api("/api/hr/options");
+    state.hrOptions = options;
+    const employees = options.employees.map((row) => `<option value="${row.id}">${escapeHtml(row.employee_number)} · ${escapeHtml(row.full_name)}</option>`).join("");
+    $("#entity-modal-content").innerHTML = `<form id="payroll-associate-form"><div class="modal-head"><div><span class="eyebrow">REVISIÓN MANUAL</span><h2>Relacionar CFDI</h2><p class="muted">Utiliza esta acción sólo después de validar el expediente fiscal.</p></div><button type="button" data-close-modal>×</button></div><label>Colaborador<select name="employeeId" required><option value="">Selecciona un colaborador</option>${employees}</select></label><label>Motivo de la asociación<textarea name="reason" minlength="5" maxlength="500" rows="4" required></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar relación</button></div></form>`;
+    $("#payroll-associate-form").onsubmit = async (event) => {
+      event.preventDefault(); const form = event.currentTarget, data = new FormData(form), box = $(".form-error", form);
       try {
-        if (file) {
-          body.photoBase64 = await fileToBase64(file);
-          body.photoName = file.name;
-          body.photoMime = file.type;
-        }
-        const result = await api("/api/hr/people", { method: "POST", body });
-        state.hrOptions = null;
-        toast("Personal " + result.folio + " guardado.");
-        showHrPersonConfirmation(result, body.fullName);
-        try { await renderHr(); } catch { toast("El expediente se guardó, pero el tablero no pudo actualizarse.", "error"); }
-      } catch (error) {
-        submit.disabled = false;
-        box.textContent = error.message;
-        box.classList.remove("hidden");
-      }
+        await api(`/api/payroll/cfdi/receipts/${id}/associate`, { method: "PATCH", body: { employeeId: Number(data.get("employeeId")), reason: data.get("reason") } });
+        entityDialog.close(); toast("CFDI relacionado y colaborador notificado."); await renderPayroll();
+      } catch (error) { box.textContent = error.message; box.classList.remove("hidden"); }
     };
-    entityDialog.showModal(); return;
+    entityDialog.showModal();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+let hrUiModulePromise = null;
+
+async function loadHrUiModule() {
+  if (!hrUiModulePromise) {
+    hrUiModulePromise = import("./modules/hr.js?v=20260807-78")
+      .then(({ createHrModule }) => createHrModule({ $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials }))
+      .catch((error) => { hrUiModulePromise = null; throw error; });
   }
-  const leaveType = type;
-  const selectedEmployee = employeeRecords.find((row) => Number(row.id) === Number(employeeId))
-    || state.hrControl?.people?.find((row) => Number(row.id) === Number(employeeId));
-  if (!selectedEmployee || selectedEmployee.status === "inactive") {
-    toast("Selecciona la solicitud desde la fila de un colaborador activo.", "error");
-    return;
-  }
-  const title = { permission: "Nuevo permiso", vacation: "Nuevas vacaciones", incapacity: "Nueva incapacidad" }[leaveType];
-  const leaveSubtypeOptions = {
-    permission: ["Asunto personal", "Cita médica", "Comisión laboral", "Trámite oficial", "Evento familiar", "Permiso con goce", "Permiso sin goce", "Otro"],
-    vacation: ["Periodo ordinario", "Día de vacaciones", "Vacaciones anticipadas", "Vacaciones pendientes", "Otro"],
-    incapacity: ["Enfermedad general", "Riesgo de trabajo", "Accidente de trabajo", "Accidente en trayecto", "Enfermedad de trabajo", "Maternidad", "Otro"],
-  }[leaveType] || [];
-  const subtypeOptions = '<option value="">Selecciona un subtipo</option>'
-    + leaveSubtypeOptions.map((option) => '<option value="' + escapeAttribute(option) + '">' + escapeHtml(option) + '</option>').join("");
-  const hoursHelpText = {
-    permission: "Captura horas únicamente cuando el permiso cubra una parte de la jornada, por ejemplo 2.5 horas. Si corresponde a días completos, conserva el valor en 0.",
-    vacation: "Las vacaciones se calculan automáticamente por los días indicados entre Inicio y Fin. En este tipo de solicitud conserva el valor en 0.",
-    incapacity: "La incapacidad se calcula por fechas. Captura horas solamente si el documento médico especifica una ausencia parcial; de lo contrario conserva el valor en 0.",
-  }[leaveType];
-  const certificateField = leaveType === "incapacity"
-    ? '<label class="hr-hours-field hr-certificate-field"><span class="hr-hours-label">Certificado<button class="hr-hours-help-button" type="button" data-hr-field-help data-hr-certificate-help aria-label="Explicar qué certificado capturar" aria-expanded="false">?</button></span><input name="certificateNumber" maxlength="120" /><span class="hr-hours-help-popover" data-hr-field-popover role="note" hidden><strong>¿Qué debo capturar?</strong><small>Ingresa el número o folio del certificado de incapacidad que aparece en el documento médico. Si el documento no incluye un identificador, puedes dejar este campo vacío.</small></span></label>'
-    : "";
-  const employeeReference = '<div class="hr-selected-employee"><div><small>COLABORADOR DE LA SOLICITUD</small><strong>' + escapeHtml(selectedEmployee.full_name) + '</strong></div><span>' + escapeHtml(selectedEmployee.employee_number) + '</span><input type="hidden" name="employeeId" value="' + selectedEmployee.id + '" /></div>';
-  $("#entity-modal-content").innerHTML = '<form id="hr-form"><div class="modal-head"><div><span class="eyebrow">SOLICITUD DE PERSONAL</span><h2>' + title + '</h2></div><button type="button" data-close-modal>×</button></div><input type="hidden" name="leaveType" value="' + leaveType + '" />' + employeeReference + '<div class="form-grid"><label>Subtipo<select name="subtype" required>' + subtypeOptions + '</select></label><label>Inicio<input name="startDate" type="date" required /></label><label>Fin<input name="endDate" type="date" required /></label><label class="hr-hours-field"><span class="hr-hours-label">Horas (si aplica)<button class="hr-hours-help-button" type="button" data-hr-field-help data-hr-hours-help aria-label="Explicar cuándo aplicar horas" aria-expanded="false">?</button></span><input name="totalHours" type="number" min="0" step="0.5" value="0" /><span class="hr-hours-help-popover" data-hr-field-popover data-hr-hours-popover role="note" hidden><strong>¿Cuándo se aplica?</strong><small>' + escapeHtml(hoursHelpText) + '</small></span></label>' + certificateField + '</div><label>Motivo<textarea name="reason" rows="3" required></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Enviar solicitud</button></div></form>';
-  const leaveForm = $("#hr-form");
-  const fieldHelpButtons = $$("[data-hr-field-help]", leaveForm);
-  const closeFieldHelp = (except = null) => fieldHelpButtons.forEach((button) => {
-    if (button === except) return;
-    $("[data-hr-field-popover]", button.closest(".hr-hours-field")).hidden = true;
-    button.setAttribute("aria-expanded", "false");
-  });
-  fieldHelpButtons.forEach((button) => {
-    button.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const popover = $("[data-hr-field-popover]", button.closest(".hr-hours-field"));
-      const opening = popover.hidden;
-      closeFieldHelp(button);
-      popover.hidden = !opening;
-      button.setAttribute("aria-expanded", String(opening));
-    };
-  });
-  leaveForm.addEventListener("click", (event) => {
-    if (!event.target.closest(".hr-hours-field")) {
-      closeFieldHelp();
-    }
-  });
-  bindModuleForm("#hr-form", "/api/hr/leaves", null, "Solicitud"); entityDialog.showModal();
+  return hrUiModulePromise;
+}
+
+async function renderHr() {
+  const module = await loadHrUiModule();
+  return module.render();
 }
 
 function workforceStatus(status) {
@@ -4403,6 +4188,25 @@ function fileToBase64(file) {
     reader.onerror = () => reject(new Error("No fue posible leer el archivo."));
     reader.readAsDataURL(file);
   });
+}
+async function downloadAuthenticatedFile(path, filename) {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      headers: state.companySlug ? { "X-Company-Slug": state.companySlug } : {},
+    });
+    if (!response.ok) {
+      const body = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
+      if (response.status === 404 && path === "/api/hr/people/import/template") {
+        throw new Error("El servidor necesita reiniciarse para habilitar la carga masiva. Recarga la página cuando vuelva a estar disponible.");
+      }
+      throw new Error(body?.error || "No fue posible descargar el archivo.");
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url; link.download = filename || "archivo"; document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { toast(error.message, "error"); }
 }
 function formatBytes(value) {
   const bytes = Number(value) || 0;

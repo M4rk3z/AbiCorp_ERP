@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+const hrSource = readFileSync(new URL("../public/modules/hr.js", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+const source = `${appSource}\n${hrSource}`;
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const portalHtml = readFileSync(new URL("../public/portal.html", import.meta.url), "utf8");
+const portalSource = readFileSync(new URL("../public/portal.js", import.meta.url), "utf8");
+const portalStyles = readFileSync(new URL("../public/portal.css", import.meta.url), "utf8");
 
 test("la interfaz versiona sus archivos para evitar código obsoleto en caché", () => {
   assert.match(html, /styles\.css\?v=\d{8}-\d+/);
@@ -66,11 +72,11 @@ test("dashboards permite personalizar atajos y mueve la supervisión a configura
 });
 
 test("configuración usa una lista predeterminada de zonas horarias", () => {
-  assert.match(source, /const predefinedTimezones/);
-  assert.match(source, /America\/Mexico_City/);
-  assert.match(source, /America\/Chicago/);
-  assert.match(source, /<select name="timezone" required>/);
-  assert.doesNotMatch(source, /<input name="timezone"/);
+  assert.match(appSource, /const predefinedTimezones/);
+  assert.match(appSource, /America\/Mexico_City/);
+  assert.match(appSource, /America\/Chicago/);
+  assert.match(appSource, /<select name="timezone" required>/);
+  assert.doesNotMatch(appSource, /<input name="timezone"/);
 });
 
 test("las vistas no acumulan controladores de clic", () => {
@@ -101,16 +107,39 @@ test("almacén concentra las operaciones en un centro visual", () => {
   assert.match(source, /\/api\/inventory\/balances/);
 });
 
-test("datos maestros concentra sus seis tipos en un panel visual", () => {
+test("datos maestros muestra sólo los catálogos relacionados con los módulos habilitados", () => {
   assert.equal(html.includes('data-view="masters_hub"'), true);
   for (const view of ["items", "customers", "suppliers", "employees", "resources", "price_lists"]) {
     assert.equal(html.includes(`data-view="${view}"`), false);
     assert.equal(source.includes(`${view}:`), true);
   }
-  for (const label of ["Artículos", "Clientes", "Proveedores", "Personal", "Equipos", "Precios"]) {
+  for (const label of ["Artículos", "Clientes", "Proveedores", "Áreas", "Personal", "Equipos", "Precios"]) {
     assert.equal(source.includes(`label: "${label}"`), true);
   }
   assert.match(source, /renderMasterHub/);
+  assert.match(source, /const masterHubModuleRequirements/);
+  assert.match(source, /function availableMasterHubTypes/);
+  assert.match(source, /const types = availableMasterHubTypes\(\)/);
+  assert.match(source, /areas: \["hr", "payroll", "safety", "production", "quality", "maintenance"\]/);
+  assert.match(source, /type === "areas" \? "\/api\/areas" : `\/api\/masters\/\$\{type\}`/);
+  assert.match(source, /if \(type === "areas"\) return openAreaModal\(record\)/);
+  assert.match(source, /state\.masterHubSection = "areas"/);
+  assert.match(source, /organization_structure: \{ label: "Estructura"/);
+  assert.match(source, /renderOrganizationStructureMaster/);
+  assert.match(source, /function organizationChartMarkup/);
+  assert.match(source, /organization-chart-branches/);
+  assert.match(source, /organization-department-tree/);
+  assert.doesNotMatch(source, /ORDEN RECOMENDADO/);
+  assert.match(source, /organizationStructureDomainCard/);
+  assert.match(source, /data-manage-organization-structure/);
+  assert.match(source, /hrModule\.openStructure/);
+  assert.match(source, /hasModuleAccess\("maintenance"\)/);
+  assert.match(source, /Sin catálogos operativos/);
+  assert.doesNotMatch(source, /const types = Object\.keys\(masterUi\)/);
+  assert.match(source, /data-open-hr-catalogs/);
+  assert.match(source, /Áreas y puestos/);
+  assert.match(source, /hrModule\.openCatalogs\("areas"\)/);
+  assert.match(hrSource, /return \{ render: renderHr, openCatalogs, openStructure: openOrganizationStructure \}/);
   assert.match(source, /masterDataScene/);
   assert.match(source, /masterHubRecordCard/);
   assert.match(source, /\/api\/masters\/options/);
@@ -162,7 +191,7 @@ test("la gestión de usuarios queda fuera de la web operativa", () => {
 });
 
 test("los módulos con una sola pantalla son accesos directos", () => {
-  const directViews = ["dashboard", "masters_hub", "inventory_stock", "purchases_control", "sales_control", "production_control", "quality_control", "maintenance_control", "safety_control", "hr_control", "logistics_control", "finance_control", "settings"];
+  const directViews = ["dashboard", "masters_hub", "inventory_stock", "purchases_control", "sales_control", "production_control", "quality_control", "maintenance_control", "safety_control", "logistics_control", "finance_control", "settings"];
   for (const view of directViews) {
     assert.match(html, new RegExp(`class="nav-item nav-direct[^"]*" data-view="${view}"`));
   }
@@ -214,6 +243,14 @@ test("seguridad y recursos humanos comparten incapacidades y control operativo",
   assert.match(source, /¿Qué debo capturar\?/);
   assert.match(source, /const certificateField = leaveType === "incapacity"/);
   assert.match(source, /const leaveSubtypeOptions =/);
+  assert.match(source, /data-vacation-balance/);
+  assert.match(source, /if \(leaveType === "vacation"\) \$\("\.hr-hours-field", leaveForm\)\?\.remove\(\)/);
+  assert.match(source, /Días solicitados/);
+  assert.match(source, /Saldo proyectado/);
+  assert.match(source, /\/api\/hr\/leaves\/preview/);
+  assert.match(source, /function hrLeavePrintDocument/);
+  assert.match(source, /function printHrLeaveReceipt/);
+  assert.match(source, /data-hr-print/);
   assert.match(source, /Accidente en trayecto/);
   assert.match(source, /<select name="subtype" required>/);
   assert.doesNotMatch(source, /hr-selected-employee-avatar/);
@@ -231,6 +268,15 @@ test("seguridad y recursos humanos comparten incapacidades y control operativo",
   assert.match(source, /hr-team-panel/);
   assert.match(source, /hr-person-registration/);
   assert.match(source, /hr-person-form/);
+  assert.match(source, /hrDigitalFileMarkup/);
+  assert.match(source, /name="curp"/);
+  assert.match(source, /name="companyId" data-hr-company/);
+  assert.match(source, /name="payrollFrequency" required/);
+  assert.match(source, /SALARIO · ACCESO RESTRINGIDO/);
+  assert.match(source, /file_completion_percent/);
+  assert.match(source, /document_expiry_alerts/);
+  assert.match(source, /data-view-document/);
+  assert.match(source, /Bitácora de acceso/);
   assert.match(source, /hr-labor-grid/);
   assert.match(source, /hr-derived-field/);
   assert.match(source, /hr-photo-picker/);
@@ -386,6 +432,174 @@ test("finanzas controla ingresos egresos presupuestos y conciliaciones", () => {
   assert.match(source, /openFinanceBudgetModal/);
   assert.match(source, /openFinanceReconciliationModal/);
   assert.match(source, /\/api\/finance\/control/);
+});
+
+test("el acceso del colaborador es minimalista y muestra la empresa seleccionada", () => {
+  assert.match(portalHtml, /portal\.css\?v=20260806-48/);
+  assert.match(portalHtml, /portal\.js\?v=20260806-48/);
+  assert.match(portalHtml, /class="brand-copy"/);
+  assert.ok((portalHtml.match(/data-portal-company-name/g) ?? []).length >= 2);
+  assert.doesNotMatch(portalHtml, /public-features|Tu vida laboral/);
+  assert.match(portalSource, /function syncPortalCompanyName/);
+  assert.match(portalSource, /company\?\.tradeName \|\| company\?\.legalName/);
+  assert.match(portalStyles, /Acceso publico minimalista/);
+});
+
+test("horarios presenta un calendario semanal guiado y conserva herramientas avanzadas", () => {
+  assert.match(hrSource, /CALENDARIO DE PERSONAL/);
+  assert.match(hrSource, /Crear semana autom.ticamente/);
+  assert.match(hrSource, /Completar con turnos asignados/);
+  assert.match(hrSource, /data-schedule-cell/);
+  assert.match(hrSource, /hrScheduleSuggestion/);
+  assert.match(hrSource, /Herramientas avanzadas/);
+  assert.match(hrSource, /Programado contra real/);
+});
+
+test("las confirmaciones operativas pertenecen al ERP y no al navegador", () => {
+  assert.match(html, /id="action-dialog"/);
+  assert.match(appSource, /function confirmAction/);
+  assert.match(appSource, /function requestActionText/);
+  assert.match(appSource, /function openActionDialog/);
+  assert.doesNotMatch(appSource, /\b(?:confirm|prompt|alert)\s*\(/);
+  assert.doesNotMatch(hrSource, /\b(?:confirm|prompt|alert)\s*\(/);
+});
+
+test("nomina es un submodulo de Recursos Humanos con salida controlada a Finanzas", () => {
+  assert.equal(html.includes('data-view="payroll_control"'), true);
+  assert.match(html, /data-permission="payroll\.view"/);
+  assert.match(html, /nav-group-hr/);
+  assert.match(html, /nav-group-toggle nav-module-toggle/);
+  assert.match(html, /nav-module-label/);
+  assert.match(html, /Gestión de personal/);
+  assert.match(html, /Nómina y CFDI/);
+  assert.match(source, /const payrollViews/);
+  assert.match(source, /function renderPayroll/);
+  assert.match(source, /RECURSOS HUMANOS \/ NÓMINA Y CFDI/);
+  assert.match(source, /tab\("overview", "Resumen"\)/);
+  assert.match(source, /tab\("receipts", "Recibos CFDI"/);
+  assert.match(source, /tab\("periods", "Periodos"/);
+  assert.match(source, /tab\("incidents", "Prenómina"/);
+  assert.match(source, /Administrado por Recursos Humanos/);
+  assert.doesNotMatch(html, /option value="payroll"/);
+});
+
+test("la interfaz reutiliza respuestas recientes y RH carga control y catálogos juntos", () => {
+  assert.match(source, /const API_GET_CACHE_MS = 15_000/);
+  assert.match(source, /const HR_CONTROL_CACHE_MS = 60_000/);
+  assert.match(source, /apiGetPending\.has\(cacheKey\)/);
+  assert.match(appSource, /function prefetchHrControl/);
+  assert.match(appSource, /pointerover", prepareRequestedModule/);
+  assert.match(source, /const control = await api\("\/api\/hr\/control", \{ cacheTtlMs: HR_CONTROL_CACHE_MS \}\)/);
+  assert.match(source, /const options = control\.options \|\| await api\("\/api\/hr\/options"\)/);
+  assert.match(source, /api\("\/api\/notifications", \{ cache: false \}\)/);
+  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260807-78"\)/);
+  assert.match(hrSource, /export function createHrModule/);
+  assert.doesNotMatch(appSource, /\bformatDateTime\b/);
+  assert.doesNotMatch(hrSource, /\bformatDateTime\b/);
+  assert.match(hrSource, /PIN 0000 vigente hasta " \+ formatDate\(portal\.activation_expires_at\)/);
+});
+
+test("el portal, las políticas y el acceso individual de RH tienen responsabilidades separadas", () => {
+  const portalStart = hrSource.indexOf("async function openHrPortalModal");
+  const portalEnd = hrSource.indexOf("function portalPermission", portalStart);
+  const portalModalSource = hrSource.slice(portalStart, portalEnd);
+
+  assert.match(portalModalSource, /\/api\/hr\/portal\/settings/);
+  assert.match(portalModalSource, /Guardar estado/);
+  assert.match(portalModalSource, /perfil de cada colaborador/);
+  assert.doesNotMatch(portalModalSource, /Días festivos|Cobertura por departamento|Accesos individuales|reset-pin/);
+  assert.match(hrSource, /Políticas y calendario/);
+  assert.match(hrSource, /\/api\/hr\/policies/);
+  assert.match(hrSource, /hrEmployeePortalAccessMarkup/);
+  assert.match(hrSource, /USUARIO DE ACCESO/);
+  assert.match(hrSource, /Reiniciar PIN a 0000/);
+  assert.match(hrSource, /Disponibilidad de la cuenta/);
+  assert.match(hrSource, /type=\"radio\" name=\"portalAccessStatus\"/);
+  assert.match(hrSource, /\[data-profile-portal-status\]:checked/);
+});
+
+test("el expediente de RH usa pestañas internas y abre la sección con errores", () => {
+  assert.match(hrSource, /function setupHrProfileTabs/);
+  assert.match(hrSource, /role=\"tab\" data-hr-profile-tab/);
+  assert.match(hrSource, /Resumen/);
+  assert.match(hrSource, /Identidad/);
+  assert.match(hrSource, /Laboral/);
+  assert.match(hrSource, /Portal/);
+  assert.match(hrSource, /addEventListener\("invalid"/);
+  assert.match(hrSource, /activate\(panel\.dataset\.hrProfilePanel\)/);
+  assert.match(hrSource, /const completionNode = originalNodes\.find/);
+  assert.match(hrSource, /if \(completionNode\) fields\.append\(completionNode\)/);
+  assert.match(hrSource, /INFORMACI&Oacute;N SALARIAL/);
+  assert.match(hrSource, /body\.portalAccess = readHrEmployeePortalAccess\(\)/);
+  assert.match(hrSource, /Un solo guardado para todo el expediente/);
+  assert.ok((hrSource.match(/\[name="notes"\].+insertAdjacentHTML\("beforebegin".+Parentesco/g) ?? []).length >= 2);
+  assert.match(hrSource, /profileHeader\.innerHTML = '<div><span>EXPEDIENTE<\/span>/);
+  assert.match(hrSource, /\$\("\.hr-photo-column", editForm\)\.prepend\(profileHeader\)/);
+  assert.match(hrSource, /editForm\.append\(modalClose\)/);
+  assert.doesNotMatch(hrSource, /data-profile-portal-save>Guardar acceso/);
+  assert.match(appSource, /function syncPageDialogLock/);
+  assert.doesNotMatch(appSource, /event\.target === entityDialog/);
+  assert.match(stylesSource, /\.dialog-open \{ overflow: hidden/);
+  assert.match(stylesSource, /overscroll-behavior: contain/);
+});
+
+test("recursos humanos permite validar y confirmar una carga masiva", () => {
+  assert.match(source, /data-hr-bulk>Carga masiva/);
+  assert.match(source, /function openHrBulkImportModal/);
+  assert.match(source, /\/api\/hr\/people\/import\/template/);
+  assert.match(source, /\/api\/hr\/people\/import\/preview/);
+  assert.match(source, /\/api\/hr\/people\/import-batches\//);
+  assert.match(source, /El servidor necesita reiniciarse para habilitar la carga masiva/);
+  assert.match(source, /Listo con advertencias/);
+  assert.match(source, /data-hr-bulk-warning-accept/);
+  assert.match(source, /aria-pressed="false"/);
+  assert.match(source, /Confirmación aceptada/);
+  assert.match(source, /is-accepted/);
+  assert.match(source, /data-hr-bulk-file-state/);
+  assert.match(source, /Listo para validar/);
+  assert.match(source, /Validado ✓/);
+  assert.match(source, /hr-bulk-validate-button" type="submit" disabled/);
+  assert.match(source, /Importar de todos modos/);
+  assert.match(source, /confirmWarnings: hasWarnings/);
+});
+
+test("recursos humanos administra áreas desde sus propios catálogos", () => {
+  assert.match(source, /areas: \{ number: "01", label: "Áreas"/);
+  assert.match(source, /id="hr-area-form"/);
+  assert.match(source, /canManageAreas = hasPermission\("areas\.manage"\) \|\| hasPermission\("hr\.approve"\)/);
+  assert.match(source, /bindHrCatalogForm\("#hr-area-form", "\/api\/areas"/);
+});
+
+test("los formularios bloquean envíos repetidos y muestran el guardado en curso", () => {
+  assert.match(source, /document\.addEventListener\("submit", guardFormSubmission, true\)/);
+  assert.match(source, /form\.dataset\.submitting === "true"/);
+  assert.match(source, /form-save-progress/);
+  assert.match(source, /Guardando…/);
+  assert.match(source, /No es necesario volver a presionar/);
+  assert.match(source, /claimGuardedFormSubmission\(method\)/);
+  assert.match(source, /releaseGuardedFormSubmission\(guardedSubmission\)/);
+});
+
+test("datos maestros conserva la empresa del Gestor y administra centros y departamentos", () => {
+  assert.match(hrSource, /openOrganizationStructure/);
+  assert.match(hrSource, /DATOS GENERALES/);
+  assert.match(hrSource, /label: "Empresa"/);
+  assert.doesNotMatch(hrSource, /El nombre, código y estado de esta empresa/);
+  assert.doesNotMatch(hrSource, /Para modificarla, utiliza el Gestor local/);
+  assert.match(hrSource, /managedFromControl/);
+  assert.match(hrSource, /Centros de trabajo/);
+  assert.match(hrSource, /Departamentos/);
+  assert.match(hrSource, /\/api\/hr\/structure\/work-centers/);
+  assert.doesNotMatch(hrSource, /Zona horaria<input name="timezone"/);
+  assert.match(hrSource, /\/api\/hr\/structure\/departments/);
+  assert.match(hrSource, /openStructure: openOrganizationStructure/);
+});
+
+test("configuración muestra la identidad del Gestor sin permitir editarla", () => {
+  assert.match(appSource, /EMPRESA ADMINISTRADA/);
+  assert.doesNotMatch(appSource, /Definida desde el Gestor/);
+  assert.match(appSource, /managed-company-field/);
+  assert.doesNotMatch(appSource, /name="company_name"/);
 });
 
 test("tareas conserva flujos comentarios rechazos y decisiones", () => {

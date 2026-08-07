@@ -78,11 +78,20 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.data.metrics.users, 1);
 
+  const hrPortalSettings = await request("/api/hr/portal/settings");
+  assert.equal(hrPortalSettings.response.status, 200);
+  assert.equal(typeof hrPortalSettings.data.settings.portal_enabled, "number");
+  const hrPolicies = await request("/api/hr/policies");
+  assert.equal(hrPolicies.response.status, 200);
+  assert.equal(Array.isArray(hrPolicies.data.holidays), true);
+  assert.equal(Array.isArray(hrPolicies.data.absenceLimits), true);
+
   const area = await request("/api/areas", {
     method: "POST",
     body: { code: "PROD", name: "Producción", description: "Operaciones de manufactura" },
   });
   assert.equal(area.response.status, 201);
+  assert.equal(area.data.folio, "PROD");
 
   const roles = await request("/api/roles");
   const operationalRole = roles.data.roles.find((role) => role.code === "OPERATIVO");
@@ -110,6 +119,38 @@ test("flujo principal del núcleo ERP", async (t) => {
   });
   assert.equal(company.response.status, 201);
   assert.match(company.data.code, /^EMP-\d{5}$/);
+  const initialHrStructure = await request("/api/hr/structure");
+  assert.equal(initialHrStructure.response.status, 200);
+  assert.equal(initialHrStructure.data.companies.length, 1);
+  assert.equal(initialHrStructure.data.managedCompany.tradeName, "ABICORP");
+  const managedHrCompany = initialHrStructure.data.companies[0];
+  const blockedHrCompany = await request("/api/hr/structure/companies", {
+    method: "POST",
+    body: { legalName: "Empresa Estructural", tradeName: "Estructural", taxId: "EST260101AA1" },
+  });
+  assert.equal(blockedHrCompany.response.status, 409);
+  assert.match(blockedHrCompany.data.error, /Centro de Gesti/);
+  const hrWorkCenter = await request("/api/hr/structure/work-centers", {
+    method: "POST",
+    body: { companyId: managedHrCompany.id, name: "Planta de Pruebas", centerType: "plant",
+      address: "Zona industrial" },
+  });
+  assert.equal(hrWorkCenter.response.status, 201);
+  assert.match(hrWorkCenter.data.folio, /^CTR-\d{5}$/);
+  const hrDepartment = await request("/api/hr/structure/departments", {
+    method: "POST",
+    body: { companyId: managedHrCompany.id, workCenterId: hrWorkCenter.data.id,
+      areaId: area.data.area.id, name: "Recursos Humanos" },
+  });
+  assert.equal(hrDepartment.response.status, 201);
+  assert.match(hrDepartment.data.folio, /^DEP-\d{5}$/);
+  const hrStructure = await request("/api/hr/structure");
+  assert.equal(hrStructure.response.status, 200);
+  assert.equal(hrStructure.data.companies.length, 1);
+  assert.equal(hrStructure.data.companies[0].id, managedHrCompany.id);
+  const storedHrWorkCenter = hrStructure.data.workCenters.find((row) => row.id === hrWorkCenter.data.id);
+  assert.equal(storedHrWorkCenter.timezone, "America/Chicago");
+  assert.equal(hrStructure.data.departments.some((row) => row.id === hrDepartment.data.id), true);
   const branch = await request("/api/catalogs/branches", {
     method: "POST",
     body: { company_id: company.data.id, name: "Monterrey", address: "Nuevo León", timezone: "America/Monterrey", is_active: true },
@@ -278,6 +319,7 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(splitWorkShift.response.status, 201);
   assert.match(splitWorkShift.data.folio, /^TUR-\d{5}$/);
   const hrOptions = await request("/api/hr/options");
+  assert.equal(hrOptions.data.areaCatalog.some((row) => row.code === "PROD" && row.description === "Operaciones de manufactura"), true);
   const savedSplitShift = hrOptions.data.workShifts.find((row) => row.id === splitWorkShift.data.id);
   assert.equal(JSON.parse(savedSplitShift.schedule_json).length, 2);
   assert.equal(JSON.parse(savedSplitShift.schedule_json)[0].periods.length, 2);
@@ -334,6 +376,17 @@ test("flujo principal del núcleo ERP", async (t) => {
       emergencyPhone: "8100000088",
       notes: "Expediente actualizado desde Recursos Humanos",
       removePhoto: false,
+      portalAccess: {
+        status: "active",
+        canViewFile: true,
+        canViewVacation: true,
+        canCreateRequests: true,
+        canUploadDocuments: false,
+        canViewSchedule: true,
+        canViewSalary: false,
+        canViewCfdi: true,
+        canViewMedical: false,
+      },
     },
   });
   assert.equal(personUpdate.response.status, 200);
@@ -348,6 +401,11 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.match(updatedPerson.work_schedule, /09:00–14:00/);
   assert.equal(updatedPerson.vacation_balance, 0);
   assert.equal(updatedPerson.vacation_plan_id, null);
+  const unifiedPortalAccess = await request(`/api/hr/portal/employees/${hrPerson.data.id}`);
+  assert.equal(unifiedPortalAccess.response.status, 200);
+  assert.equal(unifiedPortalAccess.data.access.access_status, "active");
+  assert.equal(unifiedPortalAccess.data.access.can_upload_documents, 0);
+  assert.equal(unifiedPortalAccess.data.access.can_view_medical, 0);
   const rejectedTemporaryVacation = await request("/api/hr/leaves", {
     method: "POST",
     body: {
@@ -497,12 +555,25 @@ test("flujo principal del núcleo ERP", async (t) => {
     },
   });
   assert.equal(permanentVacationPerson.response.status, 201);
+  const vacationPreview = await request("/api/hr/leaves/preview", {
+    method: "POST",
+    body: { employeeId: permanentVacationPerson.data.id, leaveType: "vacation", startDate: "2026-08-03", endDate: "2026-08-07" },
+  });
+  assert.equal(vacationPreview.response.status, 200);
+  assert.equal(vacationPreview.data.workingDays, 5);
+  assert.ok(vacationPreview.data.balance.availableBefore >= 5);
   const vacation = await request("/api/hr/leaves", {
     method: "POST",
-    body: { employeeId: permanentVacationPerson.data.id, leaveType: "vacation", startDate: "2026-08-03", endDate: "2026-08-07", reason: "Periodo anual" },
+    body: { employeeId: permanentVacationPerson.data.id, leaveType: "vacation", startDate: "2026-08-03", endDate: "2026-08-07", totalHours: 2, reason: "Periodo anual" },
   });
   assert.equal(vacation.response.status, 201);
   assert.match(vacation.data.folio, /^VAC-\d{6}$/);
+  assert.equal(vacation.data.receipt.request.folio, vacation.data.folio);
+  assert.equal(vacation.data.receipt.request.total_hours, 0);
+  assert.equal(vacation.data.receipt.balance.requested_days, 5);
+  const vacationPrint = await request(`/api/hr/leaves/${vacation.data.id}/print`, { method: "POST", body: {} });
+  assert.equal(vacationPrint.response.status, 200);
+  assert.equal(vacationPrint.data.receipt.printCount, 1);
 
   const attendanceEntry = await request("/api/hr/attendance", {
     method: "POST",
@@ -1043,6 +1114,40 @@ test("flujo principal del núcleo ERP", async (t) => {
   const download = await fetch(`${baseUrl}/api/documents/${document.data.id}/download`, { headers: { Cookie: cookie } });
   assert.equal(download.status, 200);
   assert.equal(await download.text(), "archivo de prueba");
+  const documentDetail = await request(`/api/documents/${document.data.id}`);
+  assert.equal(documentDetail.response.status, 200);
+  assert.equal(documentDetail.data.document.version_number, 1);
+  assert.equal(documentDetail.data.accessLog.some((entry) => entry.action === "download"), true);
+  assert.equal(documentDetail.data.accessLog.some((entry) => entry.action === "consult"), true);
+  const documentOptions = await request("/api/documents");
+  const contractDocumentType = documentOptions.data.documentTypes.find((entry) => entry.code === "CONTRACT");
+  const contractV1 = await request("/api/documents", {
+    method: "POST",
+    body: { originalName: "contrato-v1.pdf", mimeType: "application/pdf",
+      contentBase64: Buffer.from("contrato uno").toString("base64"), module: "hr",
+      entityType: "employee", entityId: String(hrPerson.data.id), employeeId: hrPerson.data.id,
+      documentTypeId: contractDocumentType.id, issueDate: "2026-01-01", description: "Contrato inicial" },
+  });
+  assert.equal(contractV1.response.status, 201);
+  const contractV2 = await request("/api/documents", {
+    method: "POST",
+    body: { originalName: "contrato-v2.pdf", mimeType: "application/pdf",
+      contentBase64: Buffer.from("contrato dos").toString("base64"), module: "hr",
+      entityType: "employee", entityId: String(hrPerson.data.id), employeeId: hrPerson.data.id,
+      documentTypeId: contractDocumentType.id, issueDate: "2026-02-01", description: "Contrato actualizado" },
+  });
+  assert.equal(contractV2.response.status, 201);
+  const versionedDocuments = await request("/api/documents");
+  const firstContract = versionedDocuments.data.documents.find((entry) => entry.id === contractV1.data.id);
+  const secondContract = versionedDocuments.data.documents.find((entry) => entry.id === contractV2.data.id);
+  assert.equal(firstContract.is_current, 0);
+  assert.equal(secondContract.is_current, 1);
+  assert.equal(secondContract.version_number, 2);
+  const retiredVersion = await request(`/api/documents/${contractV2.data.id}`, { method: "DELETE", body: {} });
+  assert.equal(retiredVersion.response.status, 200);
+  const documentsAfterRetirement = await request("/api/documents");
+  assert.equal(documentsAfterRetirement.data.documents.some((entry) => entry.id === contractV2.data.id), false);
+  assert.equal(documentsAfterRetirement.data.documents.find((entry) => entry.id === contractV1.data.id).is_current, 1);
 
   const notification = await request("/api/notifications", {
     method: "POST",
@@ -1056,7 +1161,7 @@ test("flujo principal del núcleo ERP", async (t) => {
 
   const deactivatedPerson = await request(`/api/hr/people/${hrPerson.data.id}/action`, {
     method: "POST",
-    body: { action: "deactivate" },
+    body: { action: "deactivate", terminationDate: "2026-07-31", reason: "Fin de la relación laboral" },
   });
   assert.equal(deactivatedPerson.response.status, 200);
   assert.equal(deactivatedPerson.data.status, "inactive");

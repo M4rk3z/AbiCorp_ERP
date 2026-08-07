@@ -10,8 +10,10 @@ import {
   POSTGRES_INITIAL_RESPONSE_BYTES,
   POSTGRES_MAX_RESPONSE_BYTES,
   postgresResponseBufferBytes,
+  postgresTransactionState,
 } from "../src/db/postgres-sync.js";
 import { migrations } from "../src/db/schema.js";
+import { masterDefinitions } from "../src/core/masters.js";
 
 test("traduce parámetros y conserva signos dentro de textos", () => {
   assert.equal(
@@ -55,6 +57,10 @@ test("traduce funciones de fecha y agregación usadas por los módulos", () => {
   );
 });
 
+test("las listas de precios agrupan también la moneda para PostgreSQL", () => {
+  assert.match(masterDefinitions.price_lists.select, /GROUP BY p\.id, c\.code/i);
+});
+
 test("normaliza esquemas multiempresa", () => {
   assert.equal(postgresSchemaName("Mi Empresa-01"), "tenant_mi_empresa_01");
   assert.equal(postgresSchemaName("control", ""), "control");
@@ -95,4 +101,11 @@ test("dimensiona progresivamente las respuestas PostgreSQL", () => {
     () => postgresResponseBufferBytes(POSTGRES_MAX_RESPONSE_BYTES),
     /exceeds the/,
   );
+});
+
+test("mantiene el estado de las transacciones PostgreSQL", () => {
+  assert.equal(postgresTransactionState("BEGIN IMMEDIATE"), true);
+  assert.equal(postgresTransactionState("COMMIT"), false);
+  assert.equal(postgresTransactionState("ROLLBACK"), false);
+  assert.equal(postgresTransactionState("SELECT 1"), null);
 });

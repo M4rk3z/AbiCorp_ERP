@@ -1,0 +1,29 @@
+ABICORP - CONFIGURACION LOCAL DEL CENTRO DE GESTION
+
+No pegues la External Database URL directamente en este archivo.
+
+Para produccion, ejecuta CONFIGURAR_DATABASE_GESTOR.cmd. El configurador
+solicitara la URL de forma oculta y creara aqui el archivo:
+
+postgres-external-url.secure
+
+Para el ambiente aislado, ejecuta CONFIGURAR_DATABASE_GESTOR_PRUEBAS.cmd.
+La conexion se guardara por separado en:
+
+postgres-test-url.secure
+
+Antes del primer inicio de pruebas, ejecuta tambien:
+
+CONFIGURAR_ADMIN_GESTOR_PRUEBAS.cmd
+
+La credencial temporal se cifra en control-test-admin.json y debe cambiarse
+al iniciar sesion por primera vez.
+
+Ese archivo queda cifrado por Windows y solamente puede abrirlo el mismo
+usuario en este equipo. Git ignora su contenido y nunca debe subirse al
+repositorio.
+
+Produccion abre en http://127.0.0.1:5051 y pruebas en
+http://127.0.0.1:5151. Cada ambiente conserva PID y registros separados.
+
+Para reemplazar una URL, vuelve a ejecutar su configurador correspondiente.

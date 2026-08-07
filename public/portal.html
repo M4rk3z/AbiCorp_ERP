@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Portal de colaboradores ABICORP">
+  <title>Portal de colaboradores | ABICORP</title>
+  <link rel="stylesheet" href="/portal.css?v=20260806-48">
+</head>
+<body>
+  <div id="portal-loading" class="portal-loading" hidden aria-live="polite">
+    <div class="loading-card"><span class="spinner"></span><strong>Procesando tu solicitud</strong><small>Espera un momento y evita hacer varios clics.</small></div>
+  </div>
+
+  <main id="public-view" class="public-shell">
+    <section class="public-story">
+      <a class="brand" href="/" aria-label="Volver al ERP"><span class="brand-mark">A</span><span class="brand-copy"><strong>ABICORP</strong><small class="brand-company-name" data-portal-company-name>Empresa</small></span></a>
+      <div class="story-copy">
+        <p class="eyebrow">PORTAL DE COLABORADORES</p>
+        <h1>Tu espacio<br>laboral.</h1>
+        <p class="lead">Consulta solicitudes, vacaciones, horarios y documentos desde un solo lugar.</p>
+      </div>
+      <footer>INFORMACIÓN PERSONAL Y PROTEGIDA</footer>
+    </section>
+
+    <section class="login-side">
+      <div class="login-card">
+        <div class="login-company"><span>EMPRESA</span><strong data-portal-company-name>Empresa</strong></div>
+        <p class="eyebrow">ACCESO SEGURO</p>
+        <h2>Acceso personal</h2>
+        <p class="muted">Ingresa tu ID laboral y PIN.</p>
+        <div id="portal-disabled" class="notice warning" hidden>El portal está temporalmente desactivado por Recursos Humanos.</div>
+        <form id="portal-login-form">
+          <label id="company-field" hidden>Empresa<select id="portal-company" name="company"></select></label>
+          <label>ID laboral<input name="employeeNumber" autocomplete="username" placeholder="Ej. E-00001" required></label>
+          <label>PIN de 4 dígitos
+            <span class="pin-field"><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" required><button type="button" class="text-button" data-show-pin>Ver</button></span>
+          </label>
+          <div id="login-message" class="notice error" hidden></div>
+          <button class="primary wide" type="submit">Entrar al portal <span>→</span></button>
+        </form>
+        <p class="security-note"><i></i> Primer acceso: usa temporalmente <strong>0000</strong>. Deberás crear tu PIN antes de consultar información.</p>
+      </div>
+    </section>
+  </main>
+
+  <main id="pin-view" class="center-shell" hidden>
+    <section class="pin-card">
+      <span class="brand-mark large">A</span><p class="eyebrow">PRIMER ACCESO</p><h1>Protege tu cuenta</h1>
+      <p>El PIN temporal ya fue validado. Crea un PIN personal de cuatro dígitos para continuar.</p>
+      <form id="pin-form">
+        <label>Nuevo PIN<input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" required></label>
+        <label>Confirma el PIN<input name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" required></label>
+        <div id="pin-message" class="notice error" hidden></div>
+        <button class="primary wide" type="submit">Guardar PIN y continuar</button>
+      </form>
+    </section>
+  </main>
+
+  <main id="app-view" class="app-shell" hidden>
+    <aside class="portal-sidebar">
+      <a class="brand inverse" href="/portal"><span class="brand-mark">A</span><span>ABICORP</span></a>
+      <div class="employee-mini"><span id="employee-initials"></span><div><strong id="employee-name"></strong><small id="employee-number"></small></div></div>
+      <nav id="portal-nav">
+        <button class="active" data-view="home"><span>⌂</span> Resumen</button>
+        <button data-view="requests"><span>↗</span> Solicitudes</button>
+        <button data-view="schedule"><span>◷</span> Mi horario</button>
+        <button id="cfdi-nav" data-view="cfdi"><span>▣</span> Recibos de nómina</button>
+        <button data-view="documents"><span>▱</span> Documentos</button>
+        <button data-view="notifications"><span>●</span> Notificaciones <b id="nav-unread" hidden></b></button>
+        <button id="team-nav" data-view="team" hidden><span>♙</span> Mi plantilla</button>
+      </nav>
+      <button id="portal-logout" class="logout-button">Cerrar sesión</button>
+    </aside>
+    <section class="portal-content">
+      <header class="portal-header"><div><p class="eyebrow">PORTAL PERSONAL</p><h1 id="view-title">Resumen</h1></div><div class="header-meta"><span id="today-label"></span><button id="mobile-menu" aria-label="Abrir menú">☰</button></div></header>
+      <div id="portal-message" class="notice" hidden></div>
+      <section id="portal-body"></section>
+    </section>
+  </main>
+
+  <dialog id="request-dialog">
+    <form id="request-form" class="dialog-form">
+      <div class="dialog-heading"><div><p id="request-dialog-eyebrow" class="eyebrow">NUEVA SOLICITUD</p><h2 id="request-dialog-title">Solicitar ausencia</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
+      <div class="form-grid">
+        <label>Tipo<select name="leaveType" required><option value="vacation">Vacaciones</option><option value="permission">Permiso</option><option value="incapacity">Incapacidad</option></select></label>
+        <label>Detalle<input name="subtype" maxlength="100" placeholder="Opcional"></label>
+        <label>Desde<input name="startDate" type="date" required></label>
+        <label>Hasta<input name="endDate" type="date" required></label>
+        <label>Días solicitados<input name="totalDays" type="number" min="0" step="0.5"></label>
+        <label>Horas (si aplica)<input name="totalHours" type="number" min="0" step="0.5"></label>
+      </div>
+      <label>Persona de cobertura<select name="coverageEmployeeId" id="request-coverage"><option value="">Sin asignar</option></select></label>
+      <div id="permission-unpaid-options" class="request-policy-options" hidden>
+        <label class="check-line"><input name="isUnpaid" type="checkbox" value="1"><span>Este permiso es sin goce de sueldo</span></label>
+        <label class="check-line"><input name="unpaidTermsAccepted" type="checkbox" value="1"><span>Acepto que, si se autoriza, se enviará como incidencia a prenómina.</span></label>
+      </div>
+      <label>Motivo<textarea name="reason" maxlength="800" rows="4" required></textarea></label>
+      <label>Comentario adicional<textarea name="comments" maxlength="800" rows="2" placeholder="Opcional"></textarea></label>
+      <label>Documento de respaldo (opcional)<input name="attachment" type="file" accept=".pdf,.png,.jpg,.jpeg"></label>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog>Cancelar</button><button id="request-submit-label" class="primary" type="submit">Enviar solicitud</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="document-dialog">
+    <form id="document-form" class="dialog-form">
+      <div class="dialog-heading"><div><p class="eyebrow">EXPEDIENTE DIGITAL</p><h2>Adjuntar documento</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
+      <label>Clasificación<select name="documentTypeId" id="portal-document-type" required></select></label>
+      <label>Archivo<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg" required></label>
+      <label>Descripción<textarea name="description" rows="3" maxlength="500"></textarea></label>
+      <div class="form-grid"><label>Fecha de emisión<input name="issueDate" type="date"></label><label>Fecha de vencimiento<input name="expiryDate" type="date"></label></div>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog>Cancelar</button><button class="primary" type="submit">Guardar documento</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="review-dialog">
+    <form id="review-form" class="dialog-form">
+      <div class="dialog-heading"><div><p class="eyebrow">REVISIÓN DE SOLICITUD</p><h2>Registrar decisión</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
+      <div id="review-request-summary" class="review-summary"></div>
+      <label>Decisión<select name="action" required><option value="approve">Aprobar</option><option value="request_changes">Solicitar modificaciones</option><option value="reject">Rechazar</option></select></label>
+      <label>Motivo obligatorio<textarea name="reason" minlength="5" maxlength="800" rows="4" placeholder="Explica al colaborador el motivo de la decisión." required></textarea></label>
+      <div class="form-grid"><label>Nueva fecha inicial <small>Opcional</small><input name="proposedStartDate" type="date"></label><label>Nueva fecha final <small>Opcional</small><input name="proposedEndDate" type="date"></label></div>
+      <p class="security-note">La decisión, el motivo y la fecha quedarán registrados en el historial.</p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog>Cancelar</button><button class="primary" type="submit">Guardar decisión</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="cfdi-dialog">
+    <form id="cfdi-clarification-form" class="dialog-form">
+      <div class="dialog-heading"><div><p class="eyebrow">ACLARACIÓN DE NÓMINA</p><h2>Solicitar revisión</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
+      <p class="security-note">Describe claramente la diferencia detectada. Tu mensaje quedará relacionado con el UUID del recibo.</p>
+      <label>Mensaje<textarea name="message" minlength="10" maxlength="1500" rows="5" required></textarea></label>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog>Cancelar</button><button class="primary" type="submit">Enviar aclaración</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/portal.js?v=20260806-48"></script>
+</body>
+</html>
