@@ -99,6 +99,11 @@ export function openControlDatabase({
       ip_address TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS company_storage_deletions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      database_file TEXT NOT NULL UNIQUE,
+      requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE INDEX IF NOT EXISTS idx_control_sessions_token ON control_sessions(token_hash, expires_at);
     CREATE INDEX IF NOT EXISTS idx_company_users_company ON company_users(company_id, status);
   `);

@@ -35,6 +35,7 @@ const state = {
   hrOptions: null,
   hrControl: null,
   payrollSection: "overview",
+  payrollPeriodId: null,
   settingsSection: "general",
   renderToken: 0,
   clockTimer: null,
@@ -3899,20 +3900,32 @@ function openSafetyModal(type) {
 
 async function renderPayroll() {
   beginPageRender();
-  const control = await api("/api/payroll/control");
+  const payrollQuery = state.payrollPeriodId ? `?periodId=${encodeURIComponent(state.payrollPeriodId)}` : "";
+  const control = await api("/api/payroll/control" + payrollQuery, { cache: false });
   const cfdi = control.cfdi || { periods: [], receipts: [], indicators: {} };
+  const preparation = control.preparation || { selectedPeriod: null, preparation: null, lines: [], totals: {}, warnings: [] };
+  if (preparation.selectedPeriod) state.payrollPeriodId = Number(preparation.selectedPeriod.id);
   const payrollSections = new Set(["overview", "receipts", "periods", "incidents"]);
   if (!payrollSections.has(state.payrollSection)) state.payrollSection = "overview";
-  const incidentRows = control.incidents.map((row) => '<tr><td><strong>' + escapeHtml(row.employee_name) + '</strong><small>' + escapeHtml(row.employee_number) + '</small></td><td>' + escapeHtml(row.folio) + '</td><td>' + formatDateOnly(row.start_date) + ' — ' + formatDateOnly(row.end_date) + '</td><td>' + inventoryNumber(row.days) + ' d · ' + inventoryNumber(row.hours) + ' h</td><td>' + workforceStatus(row.status) + '</td></tr>').join("");
+  const incidentRows = control.incidents.map((row) => '<tr><td><strong>' + escapeHtml(row.employee_name) + '</strong><small>' + escapeHtml(row.employee_number) + '</small></td><td>' + escapeHtml(row.folio) + '</td><td>' + formatDateOnly(row.start_date) + ' — ' + formatDateOnly(row.end_date) + '</td><td>' + inventoryNumber(row.days) + ' d · ' + inventoryNumber(row.hours) + ' h</td><td>' + payrollIncidentStatus(row.status, row.preparation_status) + '</td></tr>').join("");
   const receiptRows = cfdi.receipts.map((row) => `<tr><td><strong>${escapeHtml(row.receiver_name || row.employee_name || "Sin identificar")}</strong><small class="table-note">${escapeHtml(row.receiver_employee_number || row.receiver_rfc)}</small></td><td><strong>${escapeHtml(row.uuid)}</strong><small class="table-note">${row.payroll_type === "E" ? "Extraordinaria" : "Ordinaria"} · ${escapeHtml(row.period_code || "Sin periodo interno")}</small></td><td>${formatDateOnly(row.payment_date)}<small class="table-note">${formatDateOnly(row.period_start)} — ${formatDateOnly(row.period_end)}</small></td><td><strong>${money(row.total, row.currency_code)}</strong><small class="table-note">${row.file_count} archivo(s)</small></td><td>${payrollAssociationBadge(row.association_status)}${row.confirmed_at ? '<small class="table-note">Recepción confirmada</small>' : '<small class="table-note">Sin confirmar</small>'}</td><td><div class="table-actions"><button class="link-button" data-payroll-receipt="${row.id}">Ver</button>${row.association_status !== "associated" && hasPermission("payroll.manage") ? `<button class="link-button" data-payroll-associate="${row.id}">Relacionar</button>` : ""}</div></td></tr>`).join("");
   const periodRows = cfdi.periods.map((row) => `<tr><td><strong>${escapeHtml(row.code)}</strong><small>${payrollFrequencyLabel(row.frequency)}</small></td><td>${formatDateOnly(row.start_date)} — ${formatDateOnly(row.end_date)}</td><td>${formatDateOnly(row.payment_date)}</td><td>${workforceStatus(row.status)}</td></tr>`).join("");
   const storageReady = cfdi.storageProvider && cfdi.storageProvider !== "unconfigured";
   const pendingAssociations = (cfdi.indicators.unmatched || 0) + (cfdi.indicators.ambiguous || 0);
   const pendingIncidents = control.indicators.pending || 0;
   const processedIncidents = control.indicators.processed || 0;
+  const includedIncidents = control.indicators.included || processedIncidents;
   const canManage = hasPermission("payroll.manage");
+  const canApprove = hasPermission("payroll.approve");
   const sectionClass = (section) => state.payrollSection === section ? "" : " hidden";
   const tab = (section, label, count = null) => `<button type="button" class="payroll-tab${state.payrollSection === section ? " active" : ""}" data-payroll-section="${section}" role="tab" aria-selected="${state.payrollSection === section}"><span>${label}</span>${count == null ? "" : `<strong>${inventoryNumber(count)}</strong>`}</button>`;
+  const selectedPayrollPeriod = preparation.selectedPeriod;
+  const payrollPeriodOptions = cfdi.periods.map((row) => `<option value="${row.id}" ${Number(row.id) === Number(selectedPayrollPeriod?.id) ? "selected" : ""}>${escapeHtml(row.code)} · ${formatDateOnly(row.start_date)} — ${formatDateOnly(row.end_date)}</option>`).join("");
+  const prepayroll = preparation.preparation;
+  const prepayrollLines = preparation.lines || [];
+  const prepayrollTotals = preparation.totals || {};
+  const prepayrollRows = prepayrollLines.map((row) => `<tr><td><strong>${escapeHtml(row.employee_name)}</strong><small>${escapeHtml(row.employee_number)} · ${payrollFrequencyLabel(row.payroll_frequency || selectedPayrollPeriod?.frequency)}</small></td><td><strong>${money(row.base_pay, row.currency_code)}</strong></td><td>${money(row.other_perceptions, row.currency_code)}</td><td class="payroll-negative">− ${money(row.unpaid_leave_deduction, row.currency_code)}${Number(row.incident_count) ? `<small>${row.incident_count} incidencia(s)</small>` : ""}</td><td class="payroll-negative">− ${money(row.tax_deduction, row.currency_code)}</td><td class="payroll-negative">− ${money(row.social_security_deduction, row.currency_code)}</td><td class="payroll-negative">− ${money(row.other_deductions, row.currency_code)}</td><td class="payroll-net"><strong>${money(row.net_pay, row.currency_code)}</strong></td><td>${canManage && prepayroll?.status === "draft" ? `<button class="link-button" data-prepayroll-line="${row.id}">Ajustar</button>` : ""}</td></tr>`).join("");
+  const prepayrollWarnings = (preparation.warnings || []).map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
 
   pageContent.innerHTML = `
     <section class="payroll-heading">
@@ -3977,7 +3990,9 @@ async function renderPayroll() {
         <div class="panel payroll-panel"><div class="panel-head"><div><span class="eyebrow">CALENDARIO DE PAGO</span><h3>Periodos de nómina</h3><p>Configura una periodicidad semanal, quincenal, mensual o personalizada.</p></div>${canManage ? '<button class="button primary" data-payroll-period>Nuevo periodo</button>' : ""}</div>${periodRows ? `<div class="table-wrap"><table><thead><tr><th>Periodo</th><th>Rango</th><th>Fecha de pago</th><th>Estado</th></tr></thead><tbody>${periodRows}</tbody></table></div>` : emptyMarkup("Sin periodos", "Crea el primer periodo antes de organizar los CFDI.")}</div>
       </section>
       <section class="payroll-workspace-section${sectionClass("incidents")}" data-payroll-panel="incidents" role="tabpanel">
-        <div class="panel payroll-panel"><div class="panel-head"><div><span class="eyebrow">PRENÓMINA</span><h3>Incidencias autorizadas</h3><p>Permisos sin goce y movimientos con autorización final de Recursos Humanos.</p></div><span class="payroll-processed-chip">${inventoryNumber(processedIncidents)} procesadas</span></div>${incidentRows ? '<div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Solicitud</th><th>Periodo</th><th>Impacto</th><th>Estado</th></tr></thead><tbody>' + incidentRows + '</tbody></table></div>' : emptyMarkup("Sin incidencias", "Los permisos sin goce autorizados aparecerán aquí.")}</div>
+        <section class="prepayroll-command-bar"><div><span class="eyebrow">PRENÓMINA DEL PERIODO</span><h3>Vista previa de pago</h3><p>Calcula el sueldo esperado, integra incidencias y completa las retenciones antes de generar los CFDI.</p></div><div class="prepayroll-command-actions">${cfdi.periods.length ? `<label><span>Periodo</span><select id="prepayroll-period">${payrollPeriodOptions}</select></label>${canManage && selectedPayrollPeriod?.status !== "closed" && prepayroll?.status !== "finalized" ? `<button class="button primary" type="button" data-prepayroll-generate>${prepayroll ? "Actualizar cálculo" : "Calcular prenómina"}</button>` : ""}${canApprove && prepayroll?.status === "draft" ? '<button class="button dark" type="button" data-prepayroll-finalize>Finalizar prenómina</button>' : ""}` : ""}</div></section>
+        ${!cfdi.periods.length ? emptyMarkup("Primero crea un periodo", "La prenómina necesita fechas de inicio, fin y pago para determinar qué incidencias debe incluir.") : !prepayroll ? `<section class="prepayroll-empty"><div>∑</div><h3>El periodo está listo para calcularse</h3><p>Se tomarán el salario base y periodicidad de cada expediente. Los permisos sin goce autorizados se descontarán automáticamente.</p>${canManage ? '<button class="button primary" type="button" data-prepayroll-generate>Calcular ahora</button>' : ""}</section>` : `<section class="prepayroll-summary"><article><span>PERSONAL</span><strong>${inventoryNumber(prepayrollTotals.employees || 0)}</strong><small>colaboradores incluidos</small></article><article><span>PERCEPCIONES</span><strong>${money(prepayrollTotals.grossPay || 0, "MXN")}</strong><small>Sueldo y percepciones adicionales</small></article><article><span>DEDUCCIONES</span><strong>${money(prepayrollTotals.totalDeductions || 0, "MXN")}</strong><small>Incidencias, ISR, IMSS y otras</small></article><article class="net"><span>NETO ESTIMADO</span><strong>${money(prepayrollTotals.netPay || 0, "MXN")}</strong><small>Total previsto a pagar</small></article></section>${prepayrollWarnings ? `<div class="notice warning"><strong>Información pendiente</strong><ul>${prepayrollWarnings}</ul></div>` : ""}<div class="panel payroll-panel prepayroll-detail"><div class="panel-head"><div><span class="eyebrow">DESGLOSE POR COLABORADOR</span><h3>${escapeHtml(selectedPayrollPeriod?.code || "Periodo")}</h3><p>El ISR, IMSS y otros conceptos se capturan como importes preliminares; el cálculo fiscal definitivo debe validarse antes del timbrado.</p></div><span class="status ${prepayroll.status === "finalized" ? "active" : "pending"}">${prepayroll.status === "finalized" ? "Finalizada" : "Borrador editable"}</span></div><div class="table-wrap"><table class="prepayroll-table"><thead><tr><th>Colaborador</th><th>Sueldo base</th><th>Otras percepciones</th><th>Sin goce</th><th>ISR</th><th>IMSS</th><th>Otras deducciones</th><th>Neto</th><th></th></tr></thead><tbody>${prepayrollRows}</tbody><tfoot><tr><th colspan="2">Totales del periodo</th><td>${money(prepayrollTotals.otherPerceptions || 0, "MXN")}</td><td>− ${money(prepayrollTotals.unpaidLeaveDeduction || 0, "MXN")}</td><td>− ${money(prepayrollTotals.taxDeduction || 0, "MXN")}</td><td>− ${money(prepayrollTotals.socialSecurityDeduction || 0, "MXN")}</td><td>− ${money(prepayrollTotals.otherDeductions || 0, "MXN")}</td><td>${money(prepayrollTotals.netPay || 0, "MXN")}</td><td></td></tr></tfoot></table></div></div>`}
+        <div class="panel payroll-panel prepayroll-incidents"><div class="panel-head"><div><span class="eyebrow">INCIDENCIAS DE ORIGEN</span><h3>Permisos sin goce autorizados</h3><p>“Lista para prenómina” significa que RH ya aprobó la solicitud y falta calcular el periodo. Al calcularse cambia a “Incluida en borrador”.</p></div><span class="payroll-processed-chip">${inventoryNumber(includedIncidents)} vinculadas</span></div>${incidentRows ? '<div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Solicitud</th><th>Periodo</th><th>Impacto</th><th>Proceso de nómina</th></tr></thead><tbody>' + incidentRows + '</tbody></table></div>' : emptyMarkup("Sin incidencias", "Los permisos sin goce autorizados aparecerán aquí.")}</div>
       </section>
     </div>`;
   $$('[data-payroll-section]').forEach((button) => button.addEventListener("click", () => {
@@ -3992,6 +4007,64 @@ async function renderPayroll() {
   $$('[data-payroll-import]').forEach((button) => button.addEventListener("click", () => openPayrollCfdiImportModal(cfdi.periods)));
   $$('[data-payroll-receipt]').forEach((button) => button.onclick = () => openPayrollCfdiDetail(Number(button.dataset.payrollReceipt)));
   $$('[data-payroll-associate]').forEach((button) => button.onclick = () => openPayrollCfdiAssociation(Number(button.dataset.payrollAssociate)));
+  $("#prepayroll-period")?.addEventListener("change", async (event) => {
+    state.payrollPeriodId = Number(event.target.value); state.payrollSection = "incidents"; await renderPayroll();
+  });
+  $$('[data-prepayroll-generate]').forEach((button) => button.onclick = async () => {
+    if (!selectedPayrollPeriod) return toast("Crea o selecciona un periodo de nómina.", "error");
+    setButtonBusy(button, true, "Calculando…");
+    try {
+      await api("/api/payroll/preparation/generate", { method: "POST", body: { periodId: selectedPayrollPeriod.id } });
+      state.payrollSection = "incidents"; toast("Prenómina calculada con las incidencias autorizadas."); await renderPayroll();
+    } catch (error) { toast(error.message, "error"); }
+    finally { setButtonBusy(button, false); }
+  });
+  $$('[data-prepayroll-line]').forEach((button) => button.onclick = () =>
+    openPrepayrollLineModal(prepayrollLines.find((row) => Number(row.id) === Number(button.dataset.prepayrollLine))));
+  $("[data-prepayroll-finalize]")?.addEventListener("click", async () => {
+    if (!await confirmAction({ eyebrow: "CIERRE DE PRENÓMINA", title: "Finalizar cálculo del periodo", message: "Las líneas quedarán protegidas y las incidencias pasarán a incluidas. Confirma solamente después de revisar percepciones y deducciones.", confirmLabel: "Finalizar prenómina" })) return;
+    try {
+      await api("/api/payroll/preparation/finalize", { method: "POST", body: { preparationId: prepayroll.id } });
+      toast("Prenómina finalizada. Las incidencias quedaron incluidas."); await renderPayroll();
+    } catch (error) { toast(error.message, "error"); }
+  });
+}
+
+function openPrepayrollLineModal(line) {
+  if (!line) return;
+  const gross = Number(line.base_pay || 0) + Number(line.other_perceptions || 0);
+  const fixedDeductions = Number(line.unpaid_leave_deduction || 0);
+  $("#entity-modal-content").innerHTML = `<form id="prepayroll-line-form"><div class="modal-head"><div><span class="eyebrow">AJUSTE DE PRENÓMINA</span><h2>${escapeHtml(line.employee_name)}</h2><p class="muted">${escapeHtml(line.employee_number)} · Sueldo base ${money(line.base_pay, line.currency_code)}</p></div><button type="button" data-close-modal>×</button></div><section class="prepayroll-line-balance"><div><span>Percepción base</span><strong>${money(line.base_pay, line.currency_code)}</strong></div><div><span>Descuento automático sin goce</span><strong>− ${money(fixedDeductions, line.currency_code)}</strong></div><div class="net"><span>Neto actual</span><strong>${money(line.net_pay, line.currency_code)}</strong></div></section><div class="form-grid"><label>Percepciones adicionales<input name="otherPerceptions" type="number" min="0" step="0.01" value="${Number(line.other_perceptions || 0)}"><small class="field-help">Bonos, comisiones u otros pagos.</small></label><label>Retención ISR<input name="taxDeduction" type="number" min="0" step="0.01" value="${Number(line.tax_deduction || 0)}"><small class="field-help">Importe preliminar a validar.</small></label><label>Seguridad social / IMSS<input name="socialSecurityDeduction" type="number" min="0" step="0.01" value="${Number(line.social_security_deduction || 0)}"></label><label>Otras deducciones<input name="otherDeductions" type="number" min="0" step="0.01" value="${Number(line.other_deductions || 0)}"><small class="field-help">Préstamos, pensión u otros conceptos.</small></label></div><label>Notas<textarea name="notes" rows="3" maxlength="800">${escapeHtml(line.notes || "")}</textarea></label><div class="notice info"><strong>Cálculo transparente</strong><p>Bruto actual: ${money(gross, line.currency_code)}. La deducción por permiso sin goce se obtiene automáticamente del periodo y no se edita aquí.</p></div><p class="form-error hidden"></p><div class="modal-actions"><button type="button" class="button ghost" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar ajuste</button></div></form>`;
+  $("#prepayroll-line-form").onsubmit = async (event) => {
+    event.preventDefault(); const form = event.currentTarget, box = $(".form-error", form), submit = $('button[type="submit"]', form);
+    setButtonBusy(submit, true, "Guardando…");
+    try {
+      await api(`/api/payroll/preparation/lines/${line.id}`, { method: "PATCH", body: Object.fromEntries(new FormData(form)) });
+      entityDialog.close(); toast("Ajuste de prenómina guardado."); state.payrollSection = "incidents"; await renderPayroll();
+    } catch (error) { box.textContent = error.message; box.classList.remove("hidden"); }
+    finally { setButtonBusy(submit, false); }
+  };
+  entityDialog.showModal();
+}
+
+function payrollIncidentStatus(status, preparationStatus = "") {
+  if (status === "processed") return '<span class="status active">● Incluida en prenómina</span>';
+  if (status === "cancelled") return '<span class="status inactive">Cancelada</span>';
+  if (preparationStatus === "draft") return '<span class="status pending">● Incluida en borrador</span>';
+  return '<span class="status pending">● Lista para prenómina</span>';
+}
+
+function setButtonBusy(button, busy, label = "Procesando…") {
+  if (!button) return;
+  if (busy) {
+    button.dataset.idleLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = label;
+  } else {
+    button.disabled = false;
+    if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
+    delete button.dataset.idleLabel;
+  }
 }
 
 function payrollAssociationBadge(status) {
