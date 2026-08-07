@@ -131,13 +131,16 @@ function renderRequests() {
 function renderSchedule() {
   const schedule = state.data.schedule;
   if (!schedule) return $("#portal-body").innerHTML = '<div class="empty">La consulta de horarios no está habilitada.</div>';
-  const published = state.data.publishedSchedule || [];
-  if (published.length) {
-    $("#portal-body").innerHTML = `<div class="section-heading"><div><h2>Mi horario publicado</h2><p>Jornadas vigentes y comparación con las horas reales registradas.</p></div></div><div class="schedule-grid">${published.map((row) => `<article class="schedule-card"><small>${dateLabel(row.work_date)} · versión ${row.version_number}</small><h3>${row.is_day_off ? "Día de descanso" : `${escapeHtml(row.scheduled_start || "—")} — ${escapeHtml(row.scheduled_end || "—")}`}</h3><p>${row.actual_start || row.actual_end ? `Real: ${escapeHtml(row.actual_start || "—")} — ${escapeHtml(row.actual_end || "—")}` : "Horario real pendiente"}</p>${row.variance_minutes == null ? "" : `<span class="badge ${row.variance_minutes < 0 ? "rejected" : "success"}">${row.variance_minutes > 0 ? "+" : ""}${row.variance_minutes} min</span>`}</article>`).join("")}</div>`;
-    return;
-  }
-  const groups = schedule.groups || [];
-  $("#portal-body").innerHTML = `<div class="section-heading"><div><h2>${escapeHtml(schedule.name || "Horario asignado")}</h2><p>${escapeHtml(schedule.description || "Jornadas semanales vigentes")}</p></div></div>${groups.length ? `<div class="schedule-grid">${groups.map(scheduleCard).join("")}</div>` : `<div class="empty">${escapeHtml(schedule.description || "Aún no tienes un horario detallado asignado.")}</div>`}`;
+  const entries = state.data.publishedSchedule || [];
+  if (!entries.length) return $("#portal-body").innerHTML = `<div class="empty">${escapeHtml(schedule.description || "Aún no tienes un turno asignado.")}</div>`;
+  const working = entries.filter((row) => row.calendar_status === "scheduled").length;
+  const absences = entries.filter((row) => ["vacation", "permission", "incapacity"].includes(row.calendar_status)).length;
+  const holidays = entries.filter((row) => row.calendar_status === "holiday").length;
+  const firstDate = entries[0].work_date, lastDate = entries.at(-1).work_date;
+  $("#portal-body").innerHTML = `<section class="portal-calendar-hero"><div><span class="eyebrow">AGENDA LABORAL PERSONAL</span><h2>${escapeHtml(schedule.name || "Mi horario")}</h2><p>Tu calendario se actualiza automáticamente con el turno asignado, días feriados y solicitudes aprobadas.</p></div><div class="portal-calendar-range"><small>PERIODO VISIBLE</small><strong>${dateLabel(firstDate)} — ${dateLabel(lastDate)}</strong></div></section>
+  <div class="portal-calendar-summary"><article><strong>${working}</strong><span>jornadas programadas</span></article><article><strong>${absences}</strong><span>ausencias autorizadas</span></article><article><strong>${holidays}</strong><span>fechas feriadas</span></article></div>
+  <div class="portal-calendar-legend"><span class="scheduled"><i></i>Jornada</span><span class="vacation"><i></i>Vacaciones</span><span class="permission"><i></i>Permiso</span><span class="incapacity"><i></i>Incapacidad</span><span class="holiday"><i></i>Feriado</span><span class="rest"><i></i>Descanso</span></div>
+  <section class="portal-calendar"><div class="portal-calendar-weekdays">${["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"].map((day) => `<span>${day}</span>`).join("")}</div><div class="portal-calendar-days">${entries.map(portalCalendarDay).join("")}</div></section>`;
 }
 
 async function loadCfdiReceipts() {
@@ -161,7 +164,10 @@ async function loadDocuments() {
 }
 function renderDocuments() {
   const button = state.data.permissions.uploadDocuments ? '<button class="primary" data-new-document>Adjuntar documento</button>' : "";
-  $("#portal-body").innerHTML = `<div class="section-heading"><div><h2>Documentos personales</h2><p>Sólo se muestran las clasificaciones que tienes autorizadas.</p></div>${button}</div>${state.documents.length ? `<table class="data-table"><thead><tr><th>Documento</th><th>Clasificación</th><th>Versión</th><th>Fecha</th><th></th></tr></thead><tbody>${state.documents.map((row) => `<tr><td><strong>${escapeHtml(row.original_name)}</strong><br><small>${escapeHtml(row.description || "")}</small></td><td>${escapeHtml(row.document_type_name || row.sensitivity)}</td><td>v${row.version_number}</td><td>${dateLabel(row.created_at)}</td><td><a class="link-button" href="${apiUrl(`/api/portal/documents/${row.id}/download`)}">Descargar</a></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No hay documentos disponibles.</div>'}`;
+  const expiring = state.documents.filter((row) => row.expiry_date && Date.parse(`${row.expiry_date}T00:00:00`) >= Date.now()).length;
+  $("#portal-body").innerHTML = `<section class="portal-document-hero"><div><span class="eyebrow">ARCHIVO PERSONAL PROTEGIDO</span><h2>Mis documentos</h2><p>Consulta las versiones vigentes de tu expediente y descarga cada archivo de forma segura.</p></div>${button}</section>
+  <div class="portal-document-summary"><span><strong>${state.documents.length}</strong> documentos vigentes</span><span><strong>${expiring}</strong> con fecha de vencimiento</span></div>
+  ${state.documents.length ? `<div class="portal-document-grid">${state.documents.map((row) => `<article class="portal-document-card"><div class="portal-document-icon">${documentIcon(row)}</div><div class="portal-document-card-main"><div class="portal-document-card-head"><span>${escapeHtml(row.document_type_name || row.sensitivity || "Documento")}</span><b>V${row.version_number}</b></div><h3>${escapeHtml(row.original_name)}</h3><p>${escapeHtml(row.description || "Documento del expediente laboral")}</p><div class="portal-document-meta"><span>Subido ${dateLabel(row.created_at)}</span>${row.issue_date ? `<span>Emitido ${dateLabel(row.issue_date)}</span>` : ""}${row.expiry_date ? `<span class="${Date.parse(`${row.expiry_date}T23:59:59`) < Date.now() ? "expired" : ""}">Vence ${dateLabel(row.expiry_date)}</span>` : ""}</div></div><a class="portal-document-download" href="${apiUrl(`/api/portal/documents/${row.id}/download`)}">Descargar <span>↓</span></a></article>`).join("")}</div>` : '<div class="empty">No hay documentos disponibles.</div>'}`;
 }
 
 async function loadNotifications() {
@@ -212,17 +218,17 @@ async function portalBodyClick(event) {
 
 async function submitCfdiClarification(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget, form = new FormData(formNode);
   setLoading(true);
   try {
     await api(`/api/portal/payroll/cfdi/${state.clarifyingCfdiId}/clarifications`, { method: "POST", body: { message: form.get("message") } });
-    $("#cfdi-dialog").close(); event.currentTarget.reset(); await loadCfdiReceipts(); flash("Aclaración enviada a Nómina.", "success");
+    $("#cfdi-dialog").close(); formNode.reset(); await loadCfdiReceipts(); flash("Aclaración enviada a Nómina.", "success");
   } catch (error) { flash(error.message, "error"); }
   finally { setLoading(false); }
 }
 
 async function submitRequest(event) {
-  event.preventDefault(); const form = new FormData(event.currentTarget), file = form.get("attachment");
+  event.preventDefault(); const formNode = event.currentTarget, form = new FormData(formNode), file = form.get("attachment");
   const body = Object.fromEntries([...form.entries()].filter(([key]) => key !== "attachment"));
   if (state.editingRequestId) body.leaveType = state.data.requests.find((row) => row.id === state.editingRequestId)?.leave_type;
   setLoading(true);
@@ -230,29 +236,29 @@ async function submitRequest(event) {
     const editing = state.editingRequestId;
     const request = await api(editing ? `/api/portal/requests/${editing}` : "/api/portal/requests", { method: editing ? "PATCH" : "POST", body });
     if (file?.size) await uploadFile(file, { requestId: request.id, documentTypeId: documentTypeForRequest(body.leaveType), description: `Respaldo de la solicitud ${request.folio}` });
-    $("#request-dialog").close(); event.currentTarget.reset(); await loadPortal(); state.currentView = "requests"; renderCurrentView(); flash(`Solicitud ${request.folio} registrada correctamente.`, "success");
+    $("#request-dialog").close(); formNode.reset(); await loadPortal(); state.currentView = "requests"; renderCurrentView(); flash(`Solicitud ${request.folio} registrada correctamente.`, "success");
   } catch (error) { flash(error.message, "error"); }
   finally { setLoading(false); }
 }
 
 async function submitTeamReview(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget, form = new FormData(formNode);
   setLoading(true);
   try {
     await api(`/api/portal/team/requests/${state.reviewingRequestId}/action`, {
       method: "POST", body: { action: form.get("action"), reason: form.get("reason"),
         proposedStartDate: form.get("proposedStartDate"), proposedEndDate: form.get("proposedEndDate") },
     });
-    $("#review-dialog").close(); event.currentTarget.reset(); await loadPortal(); state.currentView = "team";
+    $("#review-dialog").close(); formNode.reset(); await loadPortal(); state.currentView = "team";
     await loadTeam(); flash("La decisión quedó registrada y el colaborador fue notificado.", "success");
   } catch (error) { flash(error.message, "error"); }
   finally { setLoading(false); }
 }
 
 async function submitDocument(event) {
-  event.preventDefault(); const form = new FormData(event.currentTarget), file = form.get("file"); setLoading(true);
-  try { await uploadFile(file, { documentTypeId: form.get("documentTypeId"), description: form.get("description"), issueDate: form.get("issueDate"), expiryDate: form.get("expiryDate") }); $("#document-dialog").close(); event.currentTarget.reset(); await loadDocuments(); flash("Documento guardado correctamente.", "success"); }
+  event.preventDefault(); const formNode = event.currentTarget, form = new FormData(formNode), file = form.get("file"); setLoading(true);
+  try { await uploadFile(file, { documentTypeId: form.get("documentTypeId"), description: form.get("description"), issueDate: form.get("issueDate"), expiryDate: form.get("expiryDate") }); $("#document-dialog").close(); formNode.reset(); await loadDocuments(); flash("Documento guardado correctamente.", "success"); }
   catch (error) { flash(error.message, "error"); }
   finally { setLoading(false); }
 }
@@ -320,6 +326,16 @@ function infoCard(label, value) { return `<article class="info-card"><small>${la
 function requestsTable(rows) { return rows.length ? `<table class="data-table"><thead><tr><th>Folio</th><th>Tipo</th><th>Periodo</th><th>Estado e historial</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td><strong>${escapeHtml(row.folio)}</strong><small class="table-note">${row.documents?.length || 0} adjunto(s) · ${row.history?.length || 0} movimiento(s)</small></td><td>${leaveLabel(row.leave_type)}${row.is_unpaid ? '<small class="table-note">Sin goce</small>' : ""}</td><td>${dateLabel(row.start_date)} — ${dateLabel(row.end_date)}<small class="table-note">${formatNumber(row.working_days || row.total_days)} día(s) hábil(es)</small></td><td><span class="badge ${row.review_action === "request_changes" ? "changes" : row.status}">${requestStatusLabel(row)}</span>${row.rejection_reason ? `<small class="table-note">${escapeHtml(row.rejection_reason)}</small>` : row.review_reason ? `<small class="table-note">${escapeHtml(row.review_reason)}</small>` : ""}${row.proposed_start_date ? `<small class="table-note">Propuesta: ${dateLabel(row.proposed_start_date)} — ${dateLabel(row.proposed_end_date)}</small>` : ""}</td><td>${row.review_action === "request_changes" ? `<button class="secondary compact" data-edit-request="${row.id}">Modificar</button>` : ""}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">Aún no hay solicitudes.</div>'; }
 function teamRequestCard(row) { return `<article class="review-card"><div class="review-card-head"><div><small>${escapeHtml(row.folio)}</small><h3>${escapeHtml(row.employee_name)}</h3></div><span class="badge ${row.review_action === "resubmitted" ? "success" : "submitted"}">${row.review_action === "resubmitted" ? "Corregida" : "Pendiente"}</span></div><p><strong>${leaveLabel(row.leave_type)}</strong> · ${dateLabel(row.start_date)} — ${dateLabel(row.end_date)}</p><p>${escapeHtml(row.reason)}</p>${row.review_reason ? `<div class="review-history">Última observación: ${escapeHtml(row.review_reason)}</div>` : ""}${row.coverage_within_limit ? "" : '<div class="review-history">Advertencia: la solicitud excede el cupo de ausencias configurado.</div>'}<div class="review-metrics"><span><strong>${row.coverage_available_after}</strong> disponibles después · mínimo ${row.coverage_minimum_available}</span><span><strong>${escapeHtml(row.shift_name || "—")}</strong> turno</span></div><button class="primary wide" data-review-request="${row.id}">Revisar solicitud →</button></article>`; }
 function scheduleCard(group) { const days = (group.days || []).map(dayLabel).join(", "); const periods = (group.periods || []).map((period) => `${period.start}–${period.end}`).join(" · "); return `<article class="schedule-card"><h3>${escapeHtml(days || "Jornada")}</h3><p>${escapeHtml(periods || "Horario por confirmar")}</p></article>`; }
+function portalCalendarDay(row) {
+  const status = row.calendar_status || (row.is_day_off ? "rest" : "scheduled");
+  const labels = { scheduled: "Jornada", vacation: "Vacaciones", permission: "Permiso", incapacity: "Incapacidad", holiday: "Feriado", rest: "Descanso" };
+  const date = new Date(`${row.work_date}T12:00:00`);
+  const hours = row.scheduled_start && row.scheduled_end ? `${row.scheduled_start} — ${row.scheduled_end}` : "Sin jornada";
+  const detail = row.absence_hours ? `${formatNumber(row.absence_hours)} h autorizadas · ${hours}`
+    : status === "scheduled" ? hours : status === "holiday" ? row.holiday_name : row.event_label || labels[status];
+  return `<article class="portal-calendar-day ${status}"><header><span>${date.getDate()}</span><small>${new Intl.DateTimeFormat("es-MX", { month: "short" }).format(date)}</small></header><strong>${labels[status] || "Evento"}</strong><p>${escapeHtml(detail || "")}</p>${row.actual_start || row.actual_end ? `<small class="portal-calendar-actual">Real ${escapeHtml(row.actual_start || "—")} — ${escapeHtml(row.actual_end || "—")}</small>` : ""}</article>`;
+}
+function documentIcon(row) { const name = String(row.original_name || "").toLowerCase(); if (name.endsWith(".pdf")) return "PDF"; if (name.endsWith(".xml")) return "XML"; if (/\.(png|jpe?g|webp)$/.test(name)) return "IMG"; return "DOC"; }
 function leaveLabel(value) { return ({ vacation: "Vacaciones", permission: "Permiso", incapacity: "Incapacidad" })[value] || value; }
 function employmentLabel(value) { return ({ permanent: "Permanente", temporary: "Temporal", contractor: "Contratista", intern: "Practicante" })[value] || value; }
 function statusLabel(value) { return ({ submitted: "En revisión", approved: "Aprobada", rejected: "Rechazada", cancelled: "Cancelada", closed: "Cerrada", active: "Activo", leave: "Ausente", inactive: "Inactivo" })[value] || value; }

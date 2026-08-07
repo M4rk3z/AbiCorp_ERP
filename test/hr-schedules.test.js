@@ -73,9 +73,22 @@ test("los horarios programados, reales y sus correcciones conservan versiones", 
   ]);
 
   const published = schedules.employeeSchedule(db, employeeId, "2026-08-03", "2026-08-09");
-  assert.equal(published.length, 6);
+  assert.equal(published.length, 7);
   assert.equal(published[0].actual_version, 2);
   assert.equal(published[0].variance_minutes, 3);
+
+  db.prepare("INSERT INTO hr_holidays (holiday_date, name, created_by) VALUES ('2026-08-05', 'Feriado de prueba', 1)").run();
+  db.prepare(`INSERT INTO hr_leave_requests
+    (folio, employee_id, leave_type, subtype, start_date, end_date, total_days, total_hours, reason, status, approved_by)
+    VALUES ('VAC-HOR-01', ?, 'vacation', 'ordinaria', '2026-08-06', '2026-08-06', 1, 0, 'Vacaciones aprobadas', 'approved', 1)`).run(employeeId);
+  db.prepare(`INSERT INTO hr_leave_requests
+    (folio, employee_id, leave_type, subtype, start_date, end_date, total_days, total_hours, reason, status, approved_by)
+    VALUES ('PER-HOR-01', ?, 'permission', 'personal', '2026-08-07', '2026-08-07', 0, 2, 'Permiso parcial aprobado', 'approved', 1)`).run(employeeId);
+  const automatic = schedules.employeeSchedule(db, employeeId, "2026-08-03", "2026-08-09");
+  assert.equal(automatic.find((row) => row.work_date === "2026-08-05").calendar_status, "holiday");
+  assert.equal(automatic.find((row) => row.work_date === "2026-08-06").calendar_status, "vacation");
+  assert.equal(automatic.find((row) => row.work_date === "2026-08-07").absence_hours, 2);
+  assert.equal(automatic.find((row) => row.work_date === "2026-08-09").calendar_status, "rest");
 
   const nextPeriod = schedules.createPeriod(db, { startDate: "2026-08-10" }, 1);
   const copied = schedules.copyPreviousWeek(db, nextPeriod.id, 1);

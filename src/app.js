@@ -2591,10 +2591,11 @@ export function createTenantApplication(options = {}) {
 
   function hrSchedulesControl(res, context, url) {
     requirePermission(context, "hr.view");
-    const payload = hrSchedules.control(db, url.searchParams.get("periodId"));
+    const payload = hrSchedules.control(db, url.searchParams.get("periodId"), url.searchParams.get("startDate"));
     const visible = visibleEmployeeIds(db, context.user.id);
     if (visible !== null) {
       payload.entries = payload.entries.filter((row) => visible.has(Number(row.employee_id)));
+      payload.automaticEntries = payload.automaticEntries.filter((row) => visible.has(Number(row.employee_id)));
       payload.comparisons = payload.comparisons.filter((row) => visible.has(Number(row.employee_id)));
       payload.corrections = payload.corrections.filter((row) => visible.has(Number(row.employee_id)));
     }
