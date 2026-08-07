@@ -6,7 +6,7 @@
     <meta name="description" content="Núcleo administrativo del ERP modular de Abicorp" />
     <title>Abicorp ERP</title>
     <link rel="icon" type="image/png" href="./assets/abicorp-logo.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260730-38" />
+    <link rel="stylesheet" href="./styles.css?v=20260807-78" />
   </head>
   <body>
     <div id="loading-screen" class="loading-screen" aria-live="polite">
@@ -99,7 +99,13 @@
           <button class="nav-item nav-direct" data-view="quality_control" data-permission="quality.view"><span class="nav-icon">✓</span>Calidad</button>
           <button class="nav-item nav-direct" data-view="maintenance_control" data-permission="maintenance.view"><span class="nav-icon">⚙</span>Mantenimiento</button>
           <button class="nav-item nav-direct" data-view="safety_control" data-permission="safety.view"><span class="nav-icon">✚</span>Seguridad y salud</button>
-          <button class="nav-item nav-direct" data-view="hr_control" data-permission="hr.view"><span class="nav-icon">♙</span>Recursos humanos</button>
+          <section class="nav-group nav-group-hr" data-nav-group>
+            <button class="nav-group-toggle nav-module-toggle" type="button" aria-expanded="false"><span class="nav-module-label"><span class="nav-icon" aria-hidden="true">♙</span><span>Recursos humanos</span></span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+            <div class="nav-group-items">
+              <button class="nav-item" data-view="hr_control" data-permission="hr.view"><span class="nav-icon">♙</span>Gestión de personal</button>
+              <button class="nav-item" data-view="payroll_control" data-permission="payroll.view"><span class="nav-icon">N</span>Nómina y CFDI</button>
+            </div>
+          </section>
           <button class="nav-item nav-direct" data-view="logistics_control" data-permission="logistics.view"><span class="nav-icon">⇢</span>Logística</button>
           <button class="nav-item nav-direct" data-view="finance_control" data-permission="finance.view"><span class="nav-icon">$</span>Finanzas</button>
           <section class="nav-group" data-nav-group>
@@ -159,7 +165,8 @@
     <dialog id="entity-dialog" class="modal">
       <div id="entity-modal-content" class="modal-card"></div>
     </dialog>
+    <dialog id="action-dialog" class="modal action-dialog" aria-labelledby="action-dialog-title"></dialog>
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=20260730-38"></script>
+    <script type="module" src="./app.js?v=20260807-80"></script>
   </body>
 </html>

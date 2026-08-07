@@ -1,8 +1,9 @@
-import { readFile, unlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { audit, openDatabase } from "./db/index.js";
+import { gzipSync } from "node:zlib";
+import { audit, openDatabase, synchronizeManagedCompanyIdentity } from "./db/index.js";
 import { openControlDatabase, resolveCompanyDatabase } from "./db/control.js";
 import { catalogDefinitions } from "./core/catalogs.js";
 import { masterDefinitions } from "./core/masters.js";
@@ -17,6 +18,19 @@ import * as tasks from "./core/tasks.js";
 import * as purchases from "./core/purchases.js";
 import * as safety from "./core/safety.js";
 import * as hr from "./core/hr.js";
+import * as hrImport from "./core/hr-import.js";
+import * as hrPortal from "./core/hr-portal.js";
+import * as hrSchedules from "./core/hr-schedules.js";
+import * as payrollCfdi from "./core/payroll-cfdi.js";
+import { createPrivateStorage, PrivateStorageError } from "./core/private-storage.js";
+import {
+  assertEmployeeAccess,
+  canAccessEmployee,
+  canAccessSensitiveDocument,
+  filterHrControl,
+  laborIdentityForUser,
+  visibleEmployeeIds,
+} from "./core/hr-identity.js";
 import { effectiveModuleAccess, permissionsForUser } from "./core/access.js";
 import {
   clearSessionCookie,
@@ -31,8 +45,11 @@ import {
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL("../public", import.meta.url)));
 const JSON_LIMIT = 12 * 1024 * 1024;
+const CFDI_JSON_LIMIT = 17 * 1024 * 1024;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_EMPLOYEE_PHOTO_BYTES = 3 * 1024 * 1024;
+const JSON_COMPRESSION_THRESHOLD = 4 * 1024;
+const HR_CONTROL_CACHE_MS = 60 * 1000;
 
 class HttpError extends Error {
   constructor(status, message, details = null) {
@@ -65,6 +82,13 @@ export function createApplication(options = {}) {
       ? registry.db.prepare("SELECT * FROM companies WHERE slug = ? AND status = 'active'").get(slug)
       : companies(true)[0];
     if (!company) throw new HttpError(404, "La empresa seleccionada no está disponible.");
+    const managedIdentity = {
+      id: company.id,
+      code: company.code,
+      slug: company.slug,
+      legalName: company.legal_name,
+      tradeName: company.trade_name,
+    };
     if (!tenants.has(company.id)) {
       const databasePath = resolveCompanyDatabase(dataDir, company.database_file);
       tenants.set(company.id, createTenantApplication({
@@ -72,16 +96,12 @@ export function createApplication(options = {}) {
         dataDir: dirname(databasePath),
         databasePath,
         databaseSchema: company.slug,
-        company: {
-          id: company.id,
-          code: company.code,
-          slug: company.slug,
-          legalName: company.legal_name,
-          tradeName: company.trade_name,
-        },
+        company: managedIdentity,
       }));
     }
-    return { company, application: tenants.get(company.id) };
+    const application = tenants.get(company.id);
+    application.syncManagedCompany(managedIdentity);
+    return { company, application };
   }
 
   function tenantForRequest(req, requestedSlug = "") {
@@ -139,7 +159,8 @@ export function createApplication(options = {}) {
       });
     }
     try {
-      const requestedSlug = String(req.headers["x-company-slug"] ?? "").trim().toLowerCase();
+      const portalCompany = url.pathname.startsWith("/api/portal/") ? url.searchParams.get("company") : "";
+      const requestedSlug = String(req.headers["x-company-slug"] ?? portalCompany ?? "").trim().toLowerCase();
       if (url.pathname === "/api/auth/login" && (req.method ?? "GET") === "POST" && !requestedSlug) {
         return await automaticLogin(req, res);
       }
@@ -174,11 +195,51 @@ export function createTenantApplication(options = {}) {
     seedAdmin: options.seedAdmin ?? true,
     company: options.company ?? null,
     sessionHours: Number(options.sessionHours ?? process.env.ERP_SESSION_HOURS ?? 8),
+    privateStorageProvider: options.privateStorageProvider ?? process.env.ERP_PRIVATE_STORAGE_PROVIDER,
   };
   const { db, dbPath } = openDatabase(config);
+  const privateStorage = options.privateStorage ?? createPrivateStorage({
+    provider: config.privateStorageProvider,
+    root: join(config.dataDir, "private"),
+    isPostgres: String(config.databaseProvider ?? "").toLowerCase() === "postgres",
+  });
   let lastCleanup = 0;
+  let hrControlSnapshot = null;
+  const hrControlViews = new Map();
+  let managedCompanyId = synchronizeManagedCompanyIdentity(db, config.company);
+  let managedCompanySignature = JSON.stringify(config.company || {});
+
+  function syncManagedCompany(company) {
+    if (!company?.legalName) return managedCompanyId;
+    const nextSignature = JSON.stringify(company);
+    if (nextSignature === managedCompanySignature) return managedCompanyId;
+    config.company = { ...company };
+    managedCompanyId = synchronizeManagedCompanyIdentity(db, config.company);
+    managedCompanySignature = nextSignature;
+    invalidateHrControlCache();
+    return managedCompanyId;
+  }
+
+  function invalidateHrControlCache() {
+    hrControlSnapshot = null;
+    hrControlViews.clear();
+  }
+
+  function mutationAffectsHrControl(path, method) {
+    if (["GET", "HEAD", "OPTIONS"].includes(method)) return false;
+    return path.startsWith("/api/hr/")
+      || path.startsWith("/api/portal/")
+      || path === "/api/safety/incapacities"
+      || path.startsWith("/api/areas")
+      || path.startsWith("/api/documents")
+      || path.startsWith("/api/masters/employees")
+      || path.startsWith("/api/catalogs/companies")
+      || path.startsWith("/api/users")
+      || path.startsWith("/api/roles");
+  }
 
   async function handle(req, res) {
+    res.abicorpRequest = req;
     setSecurityHeaders(res);
     setLocalDevelopmentCors(req, res);
     const url = new URL(req.url, "http://local.erp");
@@ -186,6 +247,7 @@ export function createTenantApplication(options = {}) {
       if (url.pathname.startsWith("/api/")) {
         if (Date.now() - lastCleanup > 10 * 60 * 1000) {
           db.prepare("DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP OR revoked_at IS NOT NULL").run();
+          db.prepare("DELETE FROM hr_portal_sessions WHERE expires_at <= CURRENT_TIMESTAMP OR revoked_at IS NOT NULL").run();
           lastCleanup = Date.now();
         }
         await handleApi(req, res, url);
@@ -195,7 +257,7 @@ export function createTenantApplication(options = {}) {
         await serveStatic(req, res, url.pathname);
       }
     } catch (error) {
-      if (error instanceof HttpError || error instanceof inventory.InventoryError || error instanceof sales.SalesError || error instanceof production.ProductionError || error instanceof quality.QualityError || error instanceof maintenance.MaintenanceError || error instanceof logistics.LogisticsError || error instanceof finance.FinanceError || error instanceof tasks.TasksError || error instanceof purchases.PurchasesError || error instanceof safety.SafetyError || error instanceof hr.HrError) {
+      if (error instanceof HttpError || error instanceof inventory.InventoryError || error instanceof sales.SalesError || error instanceof production.ProductionError || error instanceof quality.QualityError || error instanceof maintenance.MaintenanceError || error instanceof logistics.LogisticsError || error instanceof finance.FinanceError || error instanceof tasks.TasksError || error instanceof purchases.PurchasesError || error instanceof safety.SafetyError || error instanceof hr.HrError || error instanceof hrImport.HrImportError || error instanceof hrPortal.HrPortalError || error instanceof hrSchedules.HrScheduleError || error instanceof payrollCfdi.PayrollCfdiError || error instanceof PrivateStorageError) {
         return sendJson(res, error.status, { error: error.message, details: error.details });
       }
       console.error(error);
@@ -206,6 +268,12 @@ export function createTenantApplication(options = {}) {
   async function handleApi(req, res, url) {
     const method = req.method ?? "GET";
     const path = url.pathname;
+    if (mutationAffectsHrControl(path, method)) {
+      // Se limpia antes y después: así una lectura concurrente nunca deja un
+      // tablero viejo almacenado mientras termina una modificación.
+      invalidateHrControlCache();
+      res.once("finish", invalidateHrControlCache);
+    }
     if (method === "OPTIONS") {
       res.writeHead(204);
       return res.end();
@@ -213,6 +281,10 @@ export function createTenantApplication(options = {}) {
     if (path === "/api/health" && method === "GET")
       return sendJson(res, 200, { status: "ok", database: "connected", time: new Date().toISOString() });
     if (path === "/api/auth/login" && method === "POST") return login(req, res);
+    if (path === "/api/portal/public" && method === "GET") return sendJson(res, 200, hrPortal.publicStatus(db));
+    if (path === "/api/portal/login" && method === "POST") return portalLogin(req, res);
+    if (path === "/api/portal/pin" && method === "POST") return portalChangePin(req, res);
+    if (path.startsWith("/api/portal/")) return handlePortalApi(req, res, path, method);
 
     const context = authenticate(req);
     if (!context) throw new HttpError(401, "Debes iniciar sesión.");
@@ -402,8 +474,34 @@ export function createTenantApplication(options = {}) {
     const safetyComplianceActionMatch = path.match(/^\/api\/safety\/compliance\/(\d+)\/action$/);
     if (safetyComplianceActionMatch && method === "POST") return safetyComplianceAction(req, res, context, Number(safetyComplianceActionMatch[1]));
     if (path === "/api/hr/options" && method === "GET") return hrOptions(res, context);
+    if (path === "/api/hr/structure" && method === "GET") return hrStructure(res, context);
+    if (path === "/api/hr/structure/companies" && method === "POST") return hrCompanyCreate(req, res, context);
+    const hrCompanyMatch = path.match(/^\/api\/hr\/structure\/companies\/(\d+)$/);
+    if (hrCompanyMatch && method === "PATCH") return hrCompanyUpdate(req, res, context, Number(hrCompanyMatch[1]));
+    if (path === "/api/hr/structure/work-centers" && method === "POST") return hrWorkCenterCreate(req, res, context);
+    const hrWorkCenterStructureMatch = path.match(/^\/api\/hr\/structure\/work-centers\/(\d+)$/);
+    if (hrWorkCenterStructureMatch && method === "PATCH") return hrWorkCenterUpdate(req, res, context, Number(hrWorkCenterStructureMatch[1]));
+    if (path === "/api/hr/structure/departments" && method === "POST") return hrDepartmentCreate(req, res, context);
+    const hrDepartmentStructureMatch = path.match(/^\/api\/hr\/structure\/departments\/(\d+)$/);
+    if (hrDepartmentStructureMatch && method === "PATCH") return hrDepartmentUpdate(req, res, context, Number(hrDepartmentStructureMatch[1]));
+    if (path === "/api/payroll/control" && method === "GET") return payrollControl(res, context);
+    if (path === "/api/payroll/periods" && method === "POST") return payrollPeriodCreate(req, res, context);
+    if (path === "/api/payroll/cfdi/receipts" && method === "POST") return payrollCfdiImport(req, res, context);
+    const payrollCfdiMatch = path.match(/^\/api\/payroll\/cfdi\/receipts\/(\d+)$/);
+    if (payrollCfdiMatch && method === "GET") return payrollCfdiDetail(res, context, Number(payrollCfdiMatch[1]));
+    const payrollCfdiAssociationMatch = path.match(/^\/api\/payroll\/cfdi\/receipts\/(\d+)\/associate$/);
+    if (payrollCfdiAssociationMatch && method === "PATCH")
+      return payrollCfdiAssociate(req, res, context, Number(payrollCfdiAssociationMatch[1]));
+    const payrollCfdiFileMatch = path.match(/^\/api\/payroll\/cfdi\/receipts\/(\d+)\/files\/(\d+)$/);
+    if (payrollCfdiFileMatch && method === "GET")
+      return payrollCfdiFileDownload(req, res, context, Number(payrollCfdiFileMatch[1]), Number(payrollCfdiFileMatch[2]));
     if (path === "/api/hr/control" && method === "GET") return hrControl(res, context);
     if (path === "/api/hr/people" && method === "POST") return hrPersonCreate(req, res, context);
+    if (path === "/api/hr/people/import/template" && method === "GET") return hrPeopleImportTemplate(res, context);
+    if (path === "/api/hr/people/import/preview" && method === "POST") return hrPeopleImportPreview(req, res, context);
+    const hrPeopleImportCommitMatch = path.match(/^\/api\/hr\/people\/import-batches\/(\d+)\/commit$/);
+    if (hrPeopleImportCommitMatch && method === "POST")
+      return hrPeopleImportCommit(req, res, context, Number(hrPeopleImportCommitMatch[1]));
     const hrPersonMatch = path.match(/^\/api\/hr\/people\/(\d+)$/);
     if (hrPersonMatch && method === "PATCH") return hrPersonUpdate(req, res, context, Number(hrPersonMatch[1]));
     const hrPersonActionMatch = path.match(/^\/api\/hr\/people\/(\d+)\/action$/);
@@ -422,10 +520,45 @@ export function createTenantApplication(options = {}) {
       return hrVacationPlanUpdate(req, res, context, Number(hrVacationPlanMatch[1]));
     const hrPhotoMatch = path.match(/^\/api\/hr\/people\/(\d+)\/photo$/);
     if (hrPhotoMatch && method === "GET") return hrPersonPhoto(res, context, Number(hrPhotoMatch[1]));
+    if (path === "/api/hr/leaves/preview" && method === "POST") return hrLeavePreview(req, res, context);
     if (path === "/api/hr/leaves" && method === "POST") return hrLeaveCreate(req, res, context);
     if (path === "/api/hr/attendance" && method === "POST") return hrAttendanceCreate(req, res, context);
+    if (path === "/api/hr/schedules" && method === "GET") return hrSchedulesControl(res, context, url);
+    if (path === "/api/hr/schedule-periods" && method === "POST") return hrSchedulePeriodCreate(req, res, context);
+    const hrScheduleDefaultsMatch = path.match(/^\/api\/hr\/schedule-periods\/(\d+)\/apply-default$/);
+    if (hrScheduleDefaultsMatch && method === "POST") return hrScheduleApplyDefault(req, res, context, Number(hrScheduleDefaultsMatch[1]));
+    const hrScheduleCopyMatch = path.match(/^\/api\/hr\/schedule-periods\/(\d+)\/copy-previous$/);
+    if (hrScheduleCopyMatch && method === "POST") return hrScheduleCopyPrevious(req, res, context, Number(hrScheduleCopyMatch[1]));
+    const hrScheduleImportMatch = path.match(/^\/api\/hr\/schedule-periods\/(\d+)\/import$/);
+    if (hrScheduleImportMatch && method === "POST") return hrScheduleImport(req, res, context, Number(hrScheduleImportMatch[1]));
+    const hrScheduleEntryMatch = path.match(/^\/api\/hr\/schedule-versions\/(\d+)\/entries$/);
+    if (hrScheduleEntryMatch && method === "POST") return hrScheduleEntrySave(req, res, context, Number(hrScheduleEntryMatch[1]));
+    const hrSchedulePublishMatch = path.match(/^\/api\/hr\/schedule-versions\/(\d+)\/publish$/);
+    if (hrSchedulePublishMatch && method === "POST") return hrSchedulePublish(req, res, context, Number(hrSchedulePublishMatch[1]));
+    if (path === "/api/hr/actual-shifts" && method === "POST") return hrActualShiftCapture(req, res, context);
+    if (path === "/api/hr/actual-shifts/import" && method === "POST") return hrActualShiftImport(req, res, context);
+    if (path === "/api/hr/schedule-corrections" && method === "POST") return hrScheduleCorrectionCreate(req, res, context);
+    const hrScheduleCorrectionActionMatch = path.match(/^\/api\/hr\/schedule-corrections\/(\d+)\/action$/);
+    if (hrScheduleCorrectionActionMatch && method === "POST") return hrScheduleCorrectionAction(req, res, context, Number(hrScheduleCorrectionActionMatch[1]));
     const hrLeaveActionMatch = path.match(/^\/api\/hr\/leaves\/(\d+)\/action$/);
     if (hrLeaveActionMatch && method === "POST") return hrLeaveAction(req, res, context, Number(hrLeaveActionMatch[1]));
+    const hrLeavePrintMatch = path.match(/^\/api\/hr\/leaves\/(\d+)\/print$/);
+    if (hrLeavePrintMatch && method === "POST") return hrLeavePrint(req, res, context, Number(hrLeavePrintMatch[1]));
+    if (path === "/api/hr/portal" && method === "GET") return hrPortalAdministration(res, context);
+    if (path === "/api/hr/portal/settings" && method === "GET") return hrPortalSettingsRead(res, context);
+    if (path === "/api/hr/portal/settings" && method === "PATCH") return hrPortalSettingsUpdate(req, res, context);
+    if (path === "/api/hr/policies" && method === "GET") return hrPoliciesRead(res, context);
+    if (path === "/api/hr/holidays" && method === "POST") return hrHolidayCreate(req, res, context);
+    const hrHolidayMatch = path.match(/^\/api\/hr\/holidays\/(\d+)$/);
+    if (hrHolidayMatch && method === "DELETE") return hrHolidayDelete(req, res, context, Number(hrHolidayMatch[1]));
+    const hrAbsenceLimitMatch = path.match(/^\/api\/hr\/absence-limits\/(\d+)$/);
+    if (hrAbsenceLimitMatch && method === "PATCH")
+      return hrAbsenceLimitUpdate(req, res, context, Number(hrAbsenceLimitMatch[1]));
+    const hrPortalAccessMatch = path.match(/^\/api\/hr\/portal\/employees\/(\d+)$/);
+    if (hrPortalAccessMatch && method === "GET") return hrPortalEmployeeRead(res, context, Number(hrPortalAccessMatch[1]));
+    if (hrPortalAccessMatch && method === "PATCH") return hrPortalEmployeeUpdate(req, res, context, Number(hrPortalAccessMatch[1]));
+    const hrPortalResetMatch = path.match(/^\/api\/hr\/portal\/employees\/(\d+)\/reset-pin$/);
+    if (hrPortalResetMatch && method === "POST") return hrPortalEmployeeReset(req, res, context, Number(hrPortalResetMatch[1]));
     if (path === "/api/areas" && method === "GET") return listAreas(res, context);
     if (path === "/api/areas" && method === "POST") return createArea(req, res, context);
     const areaMatch = path.match(/^\/api\/areas\/(\d+)$/);
@@ -440,8 +573,9 @@ export function createTenantApplication(options = {}) {
     if (path === "/api/documents" && method === "GET") return listDocuments(res, context);
     if (path === "/api/documents" && method === "POST") return uploadDocument(req, res, context);
     const documentDownloadMatch = path.match(/^\/api\/documents\/(\d+)\/download$/);
-    if (documentDownloadMatch && method === "GET") return downloadDocument(res, context, Number(documentDownloadMatch[1]));
+    if (documentDownloadMatch && method === "GET") return downloadDocument(req, res, context, Number(documentDownloadMatch[1]));
     const documentMatch = path.match(/^\/api\/documents\/(\d+)$/);
+    if (documentMatch && method === "GET") return getDocument(req, res, context, Number(documentMatch[1]));
     if (documentMatch && method === "DELETE") return deleteDocument(req, res, context, Number(documentMatch[1]));
     if (path === "/api/settings" && method === "GET") return getSettings(res, context);
     if (path === "/api/settings" && method === "PATCH") return updateSettings(req, res, context);
@@ -450,6 +584,325 @@ export function createTenantApplication(options = {}) {
     const notificationMatch = path.match(/^\/api\/notifications\/(\d+)\/read$/);
     if (notificationMatch && method === "PATCH") return readNotification(res, context, Number(notificationMatch[1]));
     throw new HttpError(404, "Ruta no encontrada.");
+  }
+
+  async function portalLogin(req, res) {
+    const body = await readJson(req);
+    const result = hrPortal.login(db, {
+      employeeNumber: body.employeeNumber,
+      pin: String(body.pin ?? ""),
+      ip: requestIp(req),
+      userAgent: req.headers["user-agent"] ?? "",
+    });
+    const maxAge = result.requiresPinChange ? 15 * 60 : Math.max(60, Math.round((new Date(`${result.expiresAt}Z`).getTime() - Date.now()) / 1000));
+    res.setHeader("Set-Cookie", portalSessionCookie(result.token, maxAge));
+    sendJson(res, 200, {
+      requiresPinChange: result.requiresPinChange,
+      employee: result.employee,
+      csrfToken: result.csrfToken,
+      expiresAt: result.expiresAt,
+    });
+  }
+
+  async function portalChangePin(req, res) {
+    const session = portalContext(req, "setup");
+    verifyPortalCsrf(req, session);
+    const body = await readJson(req);
+    const result = hrPortal.changePin(db, session, String(body.newPin ?? ""), requestIp(req));
+    const maxAge = Math.max(60, Math.round((new Date(String(result.expiresAt).replace(" ", "T") + "Z").getTime() - Date.now()) / 1000));
+    res.setHeader("Set-Cookie", portalSessionCookie(parseCookies(req.headers.cookie).erp_portal_session, maxAge));
+    sendJson(res, 200, { ok: true, expiresAt: result.expiresAt });
+  }
+
+  async function handlePortalApi(req, res, path, method) {
+    const session = portalContext(req, "portal");
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) verifyPortalCsrf(req, session);
+    if (path === "/api/portal/me" && method === "GET")
+      return sendJson(res, 200, { ...hrPortal.overview(db, session), csrfToken: session.csrf_token, company: config.company });
+    if (path === "/api/portal/logout" && method === "POST") {
+      hrPortal.logout(db, session, requestIp(req));
+      res.setHeader("Set-Cookie", clearPortalSessionCookie());
+      return sendJson(res, 200, { ok: true });
+    }
+    if (path === "/api/portal/team" && method === "GET")
+      return sendJson(res, 200, hrPortal.teamOverview(db, session.employee_id));
+    if (path === "/api/portal/requests" && method === "POST") return portalRequestCreate(req, res, session);
+    const portalRequestMatch = path.match(/^\/api\/portal\/requests\/(\d+)$/);
+    if (portalRequestMatch && method === "PATCH")
+      return portalRequestUpdate(req, res, session, Number(portalRequestMatch[1]));
+    const portalTeamRequestMatch = path.match(/^\/api\/portal\/team\/requests\/(\d+)\/action$/);
+    if (portalTeamRequestMatch && method === "POST")
+      return portalTeamRequestAction(req, res, session, Number(portalTeamRequestMatch[1]));
+    if (path === "/api/portal/payroll/cfdi" && method === "GET") return portalPayrollCfdiList(res, session);
+    const portalCfdiConfirmMatch = path.match(/^\/api\/portal\/payroll\/cfdi\/(\d+)\/confirm$/);
+    if (portalCfdiConfirmMatch && method === "POST")
+      return portalPayrollCfdiConfirm(req, res, session, Number(portalCfdiConfirmMatch[1]));
+    const portalCfdiClarificationMatch = path.match(/^\/api\/portal\/payroll\/cfdi\/(\d+)\/clarifications$/);
+    if (portalCfdiClarificationMatch && method === "POST")
+      return portalPayrollCfdiClarification(req, res, session, Number(portalCfdiClarificationMatch[1]));
+    const portalCfdiFileMatch = path.match(/^\/api\/portal\/payroll\/cfdi\/(\d+)\/files\/(\d+)$/);
+    if (portalCfdiFileMatch && method === "GET")
+      return portalPayrollCfdiFileDownload(req, res, session, Number(portalCfdiFileMatch[1]), Number(portalCfdiFileMatch[2]));
+    if (path === "/api/portal/documents" && method === "GET") return portalDocuments(res, session);
+    if (path === "/api/portal/documents" && method === "POST") return portalDocumentUpload(req, res, session);
+    const documentMatch = path.match(/^\/api\/portal\/documents\/(\d+)\/download$/);
+    if (documentMatch && method === "GET") return portalDocumentDownload(req, res, session, Number(documentMatch[1]));
+    if (path === "/api/portal/notifications" && method === "GET")
+      return sendJson(res, 200, { notifications: hrPortal.notifications(db, session.employee_id) });
+    const notificationMatch = path.match(/^\/api\/portal\/notifications\/(\d+)\/read$/);
+    if (notificationMatch && method === "PATCH") {
+      hrPortal.markNotificationRead(db, session.employee_id, Number(notificationMatch[1]));
+      return sendJson(res, 200, { ok: true });
+    }
+    throw new HttpError(404, "Ruta del portal no encontrada.");
+  }
+
+  async function portalRequestCreate(req, res, session) {
+    if (!session.can_create_requests) throw new HttpError(403, "No tienes habilitada la creaci\u00f3n de solicitudes.");
+    const body = await readJson(req);
+    const result = hr.createLeave(db, { ...body, employeeId: session.employee_id }, null);
+    db.prepare("UPDATE hr_leave_requests SET request_origin = 'portal' WHERE id = ?").run(result.id);
+    hrPortal.notify(db, session.employee_id, "Solicitud recibida",
+      `Tu solicitud ${result.folio} fue registrada y est\u00e1 pendiente de revisi\u00f3n.`, "success", "hr_leave_request", result.id);
+    hrPortal.portalAudit(db, session.employee_id, "portal.request_created", "hr_leave_request", result.id,
+      { folio: result.folio, leaveType: body.leaveType }, requestIp(req));
+    sendJson(res, 201, result);
+  }
+
+  async function portalRequestUpdate(req, res, session, id) {
+    if (!session.can_create_requests) throw new HttpError(403, "No tienes habilitada la edición de solicitudes.");
+    const body = await readJson(req);
+    let result;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      result = hr.updatePortalLeave(db, id, session.employee_id, body);
+      hrPortal.recordRequestReview(db, id, session.employee_id, "resubmitted", "Modificaciones enviadas por el colaborador.");
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    const manager = db.prepare("SELECT manager_employee_id FROM hr_employee_profiles WHERE employee_id = ?").get(session.employee_id);
+    if (manager?.manager_employee_id) hrPortal.notify(db, manager.manager_employee_id, "Solicitud corregida",
+      `${result.folio} fue modificada y está lista para una nueva revisión.`, "action", "hr_leave_request", id);
+    hrPortal.portalAudit(db, session.employee_id, "portal.request_resubmitted", "hr_leave_request", id,
+      { folio: result.folio }, requestIp(req));
+    sendJson(res, 200, result);
+  }
+
+  async function portalTeamRequestAction(req, res, session, id) {
+    const body = await readJson(req);
+    const request = db.prepare("SELECT employee_id, folio FROM hr_leave_requests WHERE id = ?").get(id);
+    const result = hr.managerLeaveAction(db, id, session.employee_id, body);
+    hrPortal.recordRequestReview(db, id, session.employee_id, body.action, body.reason);
+    const messages = {
+      approve: ["Autorización de área completada", `${request.folio} fue autorizada por tu Jefe de área y pasó a Recursos Humanos.`, "success"],
+      reject: ["Solicitud rechazada", `Tu solicitud ${request.folio} fue rechazada: ${body.reason}`, "warning"],
+      request_changes: ["Solicitud con observaciones", `Debes modificar ${request.folio}: ${body.reason}`, "action"],
+    };
+    hrPortal.notify(db, request.employee_id, ...messages[body.action], "hr_leave_request", id);
+    hrPortal.portalAudit(db, session.employee_id, `portal.team_request_${body.action}`,
+      "hr_leave_request", id, { reason: body.reason, employeeId: request.employee_id }, requestIp(req));
+    sendJson(res, 200, result);
+  }
+
+  function portalPayrollCfdiList(res, session) {
+    if (!session.can_view_cfdi) throw new HttpError(403, "No tienes habilitada la consulta de CFDI de n\u00f3mina.");
+    sendJson(res, 200, { receipts: payrollCfdi.portalReceipts(db, session.employee_id) });
+  }
+
+  function portalPayrollCfdiConfirm(req, res, session, id) {
+    if (!session.can_view_cfdi) throw new HttpError(403, "No tienes habilitada la consulta de CFDI de n\u00f3mina.");
+    const receipt = payrollCfdi.confirmReceipt(db, id, session.employee_id, requestIp(req));
+    sendJson(res, 200, { receipt });
+  }
+
+  async function portalPayrollCfdiClarification(req, res, session, id) {
+    if (!session.can_view_cfdi) throw new HttpError(403, "No tienes habilitada la consulta de CFDI de n\u00f3mina.");
+    const body = await readJson(req);
+    const clarification = payrollCfdi.createClarification(db, id, session.employee_id, body.message, requestIp(req));
+    sendJson(res, 201, { clarification });
+  }
+
+  async function portalPayrollCfdiFileDownload(req, res, session, receiptId, fileId) {
+    if (!session.can_view_cfdi) throw new HttpError(403, "No tienes habilitada la consulta de CFDI de n\u00f3mina.");
+    payrollCfdi.ownReceipt(db, receiptId, session.employee_id);
+    const file = payrollCfdi.receiptFile(db, receiptId, fileId);
+    const data = await readPrivateFile(file);
+    payrollCfdi.recordAccess(db, { receiptId, fileId, employeeId: session.employee_id,
+      action: "download", fileName: file.original_name, ip: requestIp(req) });
+    sendPrivateFile(res, file, data);
+  }
+
+  function portalDocuments(res, session) {
+    const rows = db.prepare(`SELECT d.id, d.original_name, d.mime_type, d.size_bytes, d.description,
+      d.sensitivity, d.issue_date, d.expiry_date, d.version_number, d.created_at,
+      dt.code AS document_type_code, dt.name AS document_type_name
+      FROM documents d LEFT JOIN hr_document_types dt ON dt.id = d.document_type_id
+      WHERE d.employee_id = ? AND d.deleted_at IS NULL AND d.is_current = 1 ORDER BY d.created_at DESC`).all(session.employee_id)
+      .filter((row) => portalCanAccessDocument(session, row.sensitivity));
+    sendJson(res, 200, { documents: rows });
+  }
+
+  async function portalDocumentUpload(req, res, session) {
+    if (!session.can_upload_documents) throw new HttpError(403, "No tienes habilitada la carga de documentos.");
+    const body = await readJson(req);
+    const originalName = cleanText(body.originalName, 240);
+    const description = cleanOptionalText(body.description, 500) ?? "Documento adjunto desde el portal";
+    const documentType = db.prepare("SELECT * FROM hr_document_types WHERE id = ? AND is_active = 1")
+      .get(Number(body.documentTypeId));
+    if (!documentType || !["standard", "fiscal", "medical"].includes(documentType.sensitivity))
+      throw new HttpError(400, "Selecciona un tipo documental permitido.");
+    if (!portalCanAccessDocument(session, documentType.sensitivity))
+      throw new HttpError(403, "No tienes autorizaci\u00f3n para esa clase de documento.");
+    let bytes;
+    try { bytes = Buffer.from(String(body.contentBase64 ?? ""), "base64"); }
+    catch { throw new HttpError(400, "El archivo no tiene un formato v\u00e1lido."); }
+    if (!originalName || !bytes.length) throw new HttpError(400, "Selecciona un archivo v\u00e1lido.");
+    if (bytes.length > MAX_FILE_BYTES) throw new HttpError(413, "El archivo supera el l\u00edmite de 8 MB.");
+    const issueDate = cleanOptionalDate(body.issueDate, "fecha de emisi\u00f3n");
+    const expiryDate = cleanOptionalDate(body.expiryDate, "fecha de vencimiento");
+    const extension = extname(originalName).replace(/[^.a-zA-Z0-9]/g, "").slice(0, 12).toLowerCase();
+    const storedName = `${createOpaqueToken(18)}${extension}`;
+    const mimeType = cleanText(body.mimeType, 120) || "application/octet-stream";
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const previous = db.prepare(`SELECT id, version_number FROM documents WHERE employee_id = ?
+      AND document_type_id = ? AND is_current = 1 AND deleted_at IS NULL ORDER BY version_number DESC LIMIT 1`)
+      .get(session.employee_id, documentType.id);
+    let id;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      if (previous) db.prepare("UPDATE documents SET is_current = 0 WHERE id = ?").run(previous.id);
+      const result = db.prepare(`INSERT INTO documents
+        (module, entity_type, entity_id, original_name, stored_name, mime_type, size_bytes, storage_path,
+         checksum, description, content_data, sensitivity, employee_id, document_type_id, issue_date,
+         expiry_date, version_number, replaces_document_id, is_current, uploaded_by_employee_id)
+        VALUES ('hr_portal', 'employee', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`)
+        .run(session.employee_id, originalName, storedName, mimeType, bytes.length, `database:${storedName}`,
+          checksum, description, bytes, documentType.sensitivity, session.employee_id, documentType.id,
+          issueDate, expiryDate, Number(previous?.version_number || 0) + 1, previous?.id || null, session.employee_id);
+      id = Number(result.lastInsertRowid);
+      if (body.requestId) {
+        db.prepare(`UPDATE hr_leave_requests SET employee_attachment_id = ?
+          WHERE id = ? AND employee_id = ?`).run(id, Number(body.requestId), session.employee_id);
+        db.prepare(`INSERT OR IGNORE INTO hr_leave_request_documents (leave_request_id, document_id)
+          SELECT id, ? FROM hr_leave_requests WHERE id = ? AND employee_id = ?`)
+          .run(id, Number(body.requestId), session.employee_id);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    hrPortal.portalAudit(db, session.employee_id, "portal.document_uploaded", "document", id,
+      { name: originalName, sensitivity: documentType.sensitivity }, requestIp(req));
+    sendJson(res, 201, { id });
+  }
+
+  function portalDocumentDownload(req, res, session, id) {
+    const document = db.prepare(`SELECT * FROM documents WHERE id = ? AND employee_id = ?
+      AND deleted_at IS NULL AND is_current = 1`).get(id, session.employee_id);
+    if (!document) throw new HttpError(404, "Documento no encontrado.");
+    if (!portalCanAccessDocument(session, document.sensitivity)) throw new HttpError(403, "Documento no autorizado.");
+    if (!document.content_data) throw new HttpError(410, "El archivo no est\u00e1 disponible en la base de datos.");
+    hrPortal.portalAudit(db, session.employee_id, "portal.document_downloaded", "document", id,
+      { name: document.original_name }, requestIp(req));
+    db.prepare(`INSERT INTO hr_document_access_log
+      (document_id, employee_id, user_id, action, document_name, sensitivity, ip_address)
+      VALUES (?, ?, NULL, 'download', ?, ?, ?)`)
+      .run(document.id, session.employee_id, document.original_name, document.sensitivity, requestIp(req));
+    res.writeHead(200, {
+      "Content-Type": document.mime_type,
+      "Content-Length": document.content_data.length,
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(document.original_name)}`,
+      "Cache-Control": "private, no-store",
+    });
+    res.end(document.content_data);
+  }
+
+  function hrPortalAdministration(res, context) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    sendJson(res, 200, {
+      settings: hrPortal.portalSettings(db), employees: hrPortal.listEmployeeAccess(db),
+      holidays: hrPortal.holidays(db), absenceLimits: hrPortal.absenceLimits(db),
+    });
+  }
+
+  function hrPortalSettingsRead(res, context) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    sendJson(res, 200, { settings: hrPortal.portalSettings(db) });
+  }
+
+  function hrPoliciesRead(res, context) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    sendJson(res, 200, {
+      settings: hrPortal.portalSettings(db),
+      holidays: hrPortal.holidays(db),
+      absenceLimits: hrPortal.absenceLimits(db),
+    });
+  }
+
+  function hrPortalEmployeeRead(res, context, employeeId) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    assertEmployeeAccess(db, context.user.id, employeeId, HttpError);
+    sendJson(res, 200, { access: hrPortal.employeeAccess(db, employeeId) });
+  }
+
+  async function hrPortalSettingsUpdate(req, res, context) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    const settings = hrPortal.updatePortalSettings(db, await readJson(req), context.user.id);
+    moduleAudit(req, context, "hr", "hr.portal_settings_updated", "Configuraci\u00f3n del portal actualizada", settings, {}, "hr_portal_settings");
+    sendJson(res, 200, { settings });
+  }
+
+  async function hrHolidayCreate(req, res, context) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const holiday = hrPortal.createHoliday(db, await readJson(req), context.user.id);
+    moduleAudit(req, context, "hr", "hr.holiday_created", "Día festivo agregado", holiday, {}, "hr_holiday");
+    sendJson(res, 201, { holiday });
+  }
+
+  function hrHolidayDelete(req, res, context, id) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    hrPortal.deleteHoliday(db, id);
+    moduleAudit(req, context, "hr", "hr.holiday_deleted", "Día festivo retirado", { id }, {}, "hr_holiday");
+    sendJson(res, 200, { ok: true });
+  }
+
+  async function hrAbsenceLimitUpdate(req, res, context, departmentId) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const limit = hrPortal.saveAbsenceLimit(db, departmentId, await readJson(req), context.user.id);
+    moduleAudit(req, context, "hr", "hr.absence_limit_updated", "Límite de ausencias actualizado", limit, {}, "hr_department_absence_limit");
+    sendJson(res, 200, { limit });
+  }
+
+  async function hrPortalEmployeeUpdate(req, res, context, employeeId) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    assertEmployeeAccess(db, context.user.id, employeeId, HttpError);
+    const access = hrPortal.configureEmployeeAccess(db, employeeId, await readJson(req), context.user.id);
+    moduleAudit(req, context, "hr", "hr.portal_access_updated", "Acceso de colaborador al portal actualizado", { employeeId }, {}, "hr_employee_portal_access");
+    sendJson(res, 200, { access });
+  }
+
+  async function hrPortalEmployeeReset(req, res, context, employeeId) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    assertEmployeeAccess(db, context.user.id, employeeId, HttpError);
+    const access = hrPortal.resetEmployeePin(db, employeeId, context.user.id);
+    moduleAudit(req, context, "hr", "hr.portal_pin_reset", "PIN del colaborador reiniciado", { employeeId }, {}, "hr_employee_portal_access");
+    sendJson(res, 200, { access });
+  }
+
+  function portalContext(req, expectedType) {
+    const session = hrPortal.authenticate(db, parseCookies(req.headers.cookie).erp_portal_session, expectedType);
+    if (!session) throw new HttpError(401, "Debes iniciar sesi\u00f3n en el portal.");
+    return session;
   }
 
   async function login(req, res, suppliedBody = null) {
@@ -547,6 +1000,7 @@ export function createTenantApplication(options = {}) {
       roles,
       permissions,
       moduleAccess: effectiveModuleAccess(db, id),
+      laborIdentity: laborIdentityForUser(db, id),
       areas,
     };
   }
@@ -556,8 +1010,54 @@ export function createTenantApplication(options = {}) {
     if (!provided || provided !== context.csrfToken) throw new HttpError(403, "La sesión de seguridad no es válida. Recarga la página.");
   }
 
+  function verifyPortalCsrf(req, context) {
+    const provided = String(req.headers["x-csrf-token"] ?? "");
+    if (!provided || provided !== context.csrf_token)
+      throw new HttpError(403, "La sesi\u00f3n de seguridad del portal no es v\u00e1lida. Recarga la p\u00e1gina.");
+  }
+
   function requirePermission(context, permission) {
     if (!context.user.permissions.includes(permission)) throw new HttpError(403, "No tienes permiso para realizar esta acción.");
+  }
+
+  function requireAnyPermission(context, permissions) {
+    if (!permissions.some((permission) => context.user.permissions.includes(permission)))
+      throw new HttpError(403, "No tienes permiso para realizar esta acción.");
+  }
+
+  function requireHrAdministrator(context) {
+    const identity = laborIdentityForUser(db, context.user.id);
+    if (identity && (identity.identityType !== "manager" || identity.accessStatus !== "active"))
+      throw new HttpError(403, "Operacion reservada al administrador de Recursos Humanos.");
+  }
+
+  function assertCfdiPermission(context, receipt = null) {
+    const identity = laborIdentityForUser(db, context.user.id);
+    if (!canAccessSensitiveDocument(identity, "cfdi"))
+      throw new HttpError(403, "No tienes permiso para consultar CFDI de n\u00f3mina.");
+    if (receipt?.employee_id && !canAccessEmployee(db, context.user.id, receipt.employee_id))
+      throw new HttpError(403, "El CFDI pertenece a un trabajador fuera de tu alcance autorizado.");
+    if (receipt && !receipt.employee_id && !context.user.permissions.includes("payroll.manage"))
+      throw new HttpError(403, "La bandeja de CFDI no relacionados requiere permiso de gesti\u00f3n de n\u00f3mina.");
+  }
+
+  async function readPrivateFile(file) {
+    if (file.storage_provider !== privateStorage.provider)
+      throw new HttpError(503, "El proveedor configurado no corresponde al archivo solicitado.");
+    const data = await privateStorage.get(file.storage_key);
+    if (createHash("sha256").update(data).digest("hex") !== file.checksum)
+      throw new HttpError(409, "La verificaci\u00f3n de integridad del archivo fall\u00f3.");
+    return data;
+  }
+
+  function sendPrivateFile(res, file, data) {
+    res.writeHead(200, {
+      "Content-Type": file.mime_type,
+      "Content-Length": data.length,
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`,
+      "Cache-Control": "private, no-store",
+    });
+    res.end(data);
   }
 
   function logout(req, res, context) {
@@ -1287,6 +1787,15 @@ export function createTenantApplication(options = {}) {
       summary: result.folio ? `${summary}: ${result.folio}` : summary, details, ip: requestIp(req) });
   }
 
+  function protectedHrAuditDetails(body, photoLabel) {
+    const details = { ...body, photoBase64: body.photoBase64 ? photoLabel : "" };
+    for (const key of ["baseSalary", "paymentMethod", "bankReference", "bloodType", "allergies",
+      "conditions", "occupationalNotes"]) {
+      if (Object.hasOwn(details, key)) details[key] = "[dato sensible restringido]";
+    }
+    return details;
+  }
+
   function maintenanceOptions(res, context) {
     requirePermission(context, "maintenance.view");
     sendJson(res, 200, maintenance.options(db));
@@ -1724,34 +2233,163 @@ export function createTenantApplication(options = {}) {
 
   function hrOptions(res, context) {
     requirePermission(context, "hr.view");
-    sendJson(res, 200, hr.options(db));
+    const result = hr.options(db, { managedCompanyId });
+    const visible = visibleEmployeeIds(db, context.user.id);
+    if (visible !== null) result.employees = result.employees.filter((row) => visible.has(Number(row.id)));
+    result.laborIdentity = laborIdentityForUser(db, context.user.id);
+    sendJson(res, 200, result);
+  }
+
+  function hrStructure(res, context) {
+    requirePermission(context, "hr.view");
+    sendJson(res, 200, { ...hr.organizationStructure(db, managedCompanyId), managedCompany: config.company });
+  }
+
+  async function hrCompanyCreate(req, res, context) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    if (managedCompanyId) throw new HttpError(409, "La empresa se define exclusivamente desde el Centro de Gestión.");
+    const body = await readJson(req), result = hr.createCompany(db, body);
+    moduleAudit(req, context, "hr", "hr.company_created", "Empresa laboral creada", result, body, "company");
+    sendJson(res, 201, result);
+  }
+
+  async function hrCompanyUpdate(req, res, context, id) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    if (managedCompanyId) throw new HttpError(409, "La empresa se actualiza exclusivamente desde el Centro de Gestión.");
+    const body = await readJson(req), result = hr.updateCompany(db, id, body);
+    moduleAudit(req, context, "hr", "hr.company_updated", "Empresa laboral actualizada", result, body, "company");
+    sendJson(res, 200, result);
+  }
+
+  async function hrWorkCenterCreate(req, res, context) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req), result = hr.createWorkCenter(db, body);
+    moduleAudit(req, context, "hr", "hr.work_center_created", "Centro de trabajo creado", result, body, "hr_work_center");
+    sendJson(res, 201, result);
+  }
+
+  async function hrWorkCenterUpdate(req, res, context, id) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req), result = hr.updateWorkCenter(db, id, body);
+    moduleAudit(req, context, "hr", "hr.work_center_updated", "Centro de trabajo actualizado", result, body, "hr_work_center");
+    sendJson(res, 200, result);
+  }
+
+  async function hrDepartmentCreate(req, res, context) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req), result = hr.createDepartment(db, body);
+    moduleAudit(req, context, "hr", "hr.department_created", "Departamento creado", result, body, "hr_department");
+    sendJson(res, 201, result);
+  }
+
+  async function hrDepartmentUpdate(req, res, context, id) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req), result = hr.updateDepartment(db, id, body);
+    moduleAudit(req, context, "hr", "hr.department_updated", "Departamento actualizado", result, body, "hr_department");
+    sendJson(res, 200, result);
   }
 
   function hrControl(res, context) {
     requirePermission(context, "hr.view");
-    sendJson(res, 200, hr.control(db));
+    const now = Date.now();
+    if (!hrControlSnapshot || hrControlSnapshot.expiresAt <= now) {
+      hrControlSnapshot = {
+        payload: hr.control(db),
+        options: hr.options(db, { syncVacation: false, includeEmployees: false, managedCompanyId }),
+        version: now,
+        expiresAt: now + HR_CONTROL_CACHE_MS,
+      };
+      hrControlViews.clear();
+    }
+    const cachedView = hrControlViews.get(Number(context.user.id));
+    if (cachedView?.snapshot === hrControlSnapshot) return sendJson(res, 200, cachedView.result);
+
+    const payload = filterHrControl(db, context.user.id, hrControlSnapshot.payload);
+    const options = { ...hrControlSnapshot.options };
+    options.employees = payload.people.map((row) => ({
+      id: row.id,
+      employee_number: row.employee_number,
+      full_name: row.full_name,
+      area_id: row.area_id,
+      status: row.status,
+      company_id: row.company_id,
+      work_center_id: row.work_center_id,
+      department_id: row.department_id,
+      employment_type: row.employment_type,
+      vacation_balance: row.vacation_balance,
+      vacation_debt: row.vacation_debt,
+      vacation_available: row.vacation_available,
+      vacation_cycle_year: row.vacation_cycle_year,
+      vacation_plan_name: row.vacation_plan_name,
+      vacation_plan_days: row.vacation_plan_days,
+    }));
+    const result = { ...payload, options, _controlVersion: hrControlSnapshot.version };
+    hrControlViews.set(Number(context.user.id), { snapshot: hrControlSnapshot, result });
+    sendJson(res, 200, result);
   }
 
   async function hrPersonCreate(req, res, context) {
     requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
     const body = await readJson(req);
     const photo = parseEmployeePhoto(body);
-    const result = hr.createPerson(db, body);
+    const result = hr.createPerson(db, body, context.user.id);
     if (photo) {
       const filename = `employee-${result.id}.${photo.extension}`;
       db.prepare("UPDATE hr_employee_profiles SET photo_filename = ?, photo_mime = ?, photo_original_name = ?, photo_data = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?")
         .run(filename, photo.mime, photo.originalName, photo.bytes, result.id);
     }
-    const auditBody = { ...body, photoBase64: body.photoBase64 ? "[imagen guardada]" : "" };
+    const auditBody = protectedHrAuditDetails(body, "[imagen guardada]");
     moduleAudit(req, context, "hr", "hr.person_created", "Expediente de personal creado", result, auditBody, "employee");
     sendJson(res, 201, result);
   }
 
+  async function hrPeopleImportTemplate(res, context) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    const data = await hrImport.employeeImportTemplate(db);
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": 'attachment; filename="plantilla-carga-personal.xlsx"',
+      "Content-Length": data.length,
+      "Cache-Control": "private, no-store",
+    });
+    res.end(data);
+  }
+
+  async function hrPeopleImportPreview(req, res, context) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    const body = await readJson(req);
+    const batch = await hrImport.previewEmployeeImport(db, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.people_import_preview", "Carga masiva de personal validada",
+      { batchId: batch.id, totalRows: batch.totalRows, validRows: batch.validRows,
+        warningRows: batch.warningRows, errorRows: batch.errorRows },
+      { originalName: batch.originalName, format: batch.format }, "hr_employee_import_batch");
+    sendJson(res, 201, { batch });
+  }
+
+  async function hrPeopleImportCommit(req, res, context, batchId) {
+    requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    const body = await readJson(req);
+    const batch = hrImport.commitEmployeeImport(db, batchId, context.user.id, {
+      confirmWarnings: body.confirmWarnings === true,
+    });
+    moduleAudit(req, context, "hr", "hr.people_imported", "Carga masiva de personal confirmada",
+      { batchId: batch.id, imported: batch.importedRows }, { originalName: batch.originalName },
+      "hr_employee_import_batch");
+    sendJson(res, 200, { batch });
+  }
+
   async function hrPersonUpdate(req, res, context, id) {
     requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    assertEmployeeAccess(db, context.user.id, id, HttpError);
     const body = await readJson(req);
     const photo = parseEmployeePhoto(body);
-    const result = hr.updatePerson(db, id, body);
+    const result = hr.updatePerson(db, id, body, context.user.id);
+    if (body.portalAccess) hrPortal.configureEmployeeAccess(db, id, body.portalAccess, context.user.id);
     if (photo) {
       const filename = `employee-${id}.${photo.extension}`;
       db.prepare("UPDATE hr_employee_profiles SET photo_filename = ?, photo_mime = ?, photo_original_name = ?, photo_data = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?")
@@ -1759,15 +2397,17 @@ export function createTenantApplication(options = {}) {
     } else if (body.removePhoto === true) {
       db.prepare("UPDATE hr_employee_profiles SET photo_filename = NULL, photo_mime = NULL, photo_original_name = NULL, photo_data = NULL, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?").run(id);
     }
-    const auditBody = { ...body, photoBase64: body.photoBase64 ? "[imagen actualizada]" : "" };
+    const auditBody = protectedHrAuditDetails(body, "[imagen actualizada]");
     moduleAudit(req, context, "hr", "hr.person_updated", "Expediente de personal actualizado", result, auditBody, "employee");
     sendJson(res, 200, result);
   }
 
   async function hrPersonAction(req, res, context, id) {
     requirePermission(context, "hr.manage");
+    requireHrAdministrator(context);
+    assertEmployeeAccess(db, context.user.id, id, HttpError);
     const body = await readJson(req);
-    const result = hr.personAction(db, id, body);
+    const result = hr.personAction(db, id, body, context.user.id);
     moduleAudit(req, context, "hr", `hr.person_${body.action}`, "Baja de trabajador registrada", result, body, "employee");
     sendJson(res, 200, result);
   }
@@ -1822,6 +2462,7 @@ export function createTenantApplication(options = {}) {
 
   async function hrPersonPhoto(res, context, id) {
     requirePermission(context, "hr.view");
+    assertEmployeeAccess(db, context.user.id, id, HttpError);
     const profile = db.prepare("SELECT photo_filename, photo_mime, photo_data FROM hr_employee_profiles WHERE employee_id = ?").get(id);
     if (!profile?.photo_filename) throw new HttpError(404, "El trabajador no tiene fotografía.");
     let data = profile.photo_data;
@@ -1842,32 +2483,232 @@ export function createTenantApplication(options = {}) {
     res.end(data);
   }
 
+  function payrollControl(res, context) {
+    requirePermission(context, "payroll.view");
+    const incidents = db.prepare(`SELECT i.*, l.folio, e.employee_number, e.full_name AS employee_name
+      FROM hr_payroll_incidents i JOIN hr_leave_requests l ON l.id = i.leave_request_id
+      JOIN employees e ON e.id = i.employee_id ORDER BY i.created_at DESC, i.id DESC`).all();
+    const cfdi = payrollCfdi.control(db);
+    sendJson(res, 200, {
+      incidents,
+      cfdi: { ...cfdi, storageProvider: privateStorage.provider },
+      indicators: {
+        pending: incidents.filter((row) => row.status === "pending").length,
+        processed: incidents.filter((row) => row.status === "processed").length,
+      },
+    });
+  }
+
+  async function payrollPeriodCreate(req, res, context) {
+    requirePermission(context, "payroll.manage");
+    const body = await readJson(req);
+    const period = payrollCfdi.createPeriod(db, body, context.user.id);
+    moduleAudit(req, context, "payroll", "payroll.period_created", "Periodo de n\u00f3mina creado", period, body, "payroll_period");
+    sendJson(res, 201, { period });
+  }
+
+  async function payrollCfdiImport(req, res, context) {
+    requirePermission(context, "payroll.manage");
+    assertCfdiPermission(context);
+    const body = await readJson(req, CFDI_JSON_LIMIT);
+    const receipt = await payrollCfdi.importReceipt(db, privateStorage, body, context.user.id,
+      config.company?.slug || config.databaseSchema || "abicorp");
+    moduleAudit(req, context, "payroll", "payroll.cfdi_imported", "CFDI de n\u00f3mina importado",
+      { id: receipt.id, uuid: receipt.uuid, associationStatus: receipt.association_status },
+      { periodId: body.periodId || null, hasPdf: Boolean(body.pdf) }, "payroll_cfdi_receipt");
+    sendJson(res, 201, { receipt });
+  }
+
+  function payrollCfdiDetail(res, context, id) {
+    requirePermission(context, "payroll.view");
+    const receipt = payrollCfdi.receiptById(db, id);
+    assertCfdiPermission(context, receipt);
+    payrollCfdi.recordAccess(db, { receiptId: receipt.id, employeeId: receipt.employee_id,
+      userId: context.user.id, action: "consult" });
+    sendJson(res, 200, { receipt });
+  }
+
+  async function payrollCfdiAssociate(req, res, context, id) {
+    requirePermission(context, "payroll.manage");
+    assertCfdiPermission(context);
+    const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
+    const receipt = payrollCfdi.associateReceipt(db, id, body.employeeId, body.reason, context.user.id);
+    moduleAudit(req, context, "payroll", "payroll.cfdi_associated", "CFDI asociado manualmente",
+      { id: receipt.id, uuid: receipt.uuid, employeeId: receipt.employee_id }, body, "payroll_cfdi_receipt");
+    sendJson(res, 200, { receipt });
+  }
+
+  async function payrollCfdiFileDownload(req, res, context, receiptId, fileId) {
+    requirePermission(context, "payroll.view");
+    const receipt = payrollCfdi.receiptById(db, receiptId);
+    assertCfdiPermission(context, receipt);
+    const file = payrollCfdi.receiptFile(db, receiptId, fileId);
+    const data = await readPrivateFile(file);
+    payrollCfdi.recordAccess(db, { receiptId, fileId, employeeId: receipt.employee_id,
+      userId: context.user.id, action: "download", fileName: file.original_name, ip: requestIp(req) });
+    sendPrivateFile(res, file, data);
+  }
+
+  async function hrLeavePreview(req, res, context) {
+    requirePermission(context, "hr.view");
+    const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
+    sendJson(res, 200, hr.previewLeave(db, body));
+  }
+
   async function hrLeaveCreate(req, res, context) {
     requirePermission(context, "hr.operate");
     const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
     const result = hr.createLeave(db, body, context.user.id);
+    db.prepare("UPDATE hr_leave_requests SET request_origin = 'hr_direct' WHERE id = ?").run(result.id);
+    hrPortal.notify(db, Number(body.employeeId), "Ausencia registrada por Recursos Humanos",
+      `Recursos Humanos registr\u00f3 ${result.folio} en tu historial.`, "info", "hr_leave_request", result.id, context.user.id);
     moduleAudit(req, context, "hr", "hr.leave_created", "Solicitud de ausencia creada", result, body, "hr_leave_request");
-    sendJson(res, 201, result);
+    sendJson(res, 201, { ...result, receipt: hr.leaveReceipt(db, result.id) });
+  }
+
+  function hrLeavePrint(req, res, context, id) {
+    requirePermission(context, "hr.view");
+    const leave = db.prepare("SELECT employee_id FROM hr_leave_requests WHERE id = ?").get(id);
+    if (!leave) throw new HttpError(404, "Solicitud no encontrada.");
+    assertEmployeeAccess(db, context.user.id, leave.employee_id, HttpError);
+    const receipt = hr.recordLeavePrint(db, id, context.user.id, requestIp(req));
+    moduleAudit(req, context, "hr", "hr.leave_receipt_printed", "Comprobante de ausencia emitido",
+      { id, folio: receipt.request.folio }, { printCount: receipt.printCount }, "hr_leave_request");
+    sendJson(res, 200, { receipt });
   }
 
   async function hrAttendanceCreate(req, res, context) {
     requirePermission(context, "hr.operate");
     const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
     const result = hr.createAttendance(db, body, context.user.id);
     moduleAudit(req, context, "hr", "hr.attendance_created", "Entrada o salida registrada", result, body, "hr_attendance");
     sendJson(res, 201, result);
   }
 
+  function hrSchedulesControl(res, context, url) {
+    requirePermission(context, "hr.view");
+    const payload = hrSchedules.control(db, url.searchParams.get("periodId"));
+    const visible = visibleEmployeeIds(db, context.user.id);
+    if (visible !== null) {
+      payload.entries = payload.entries.filter((row) => visible.has(Number(row.employee_id)));
+      payload.comparisons = payload.comparisons.filter((row) => visible.has(Number(row.employee_id)));
+      payload.corrections = payload.corrections.filter((row) => visible.has(Number(row.employee_id)));
+    }
+    sendJson(res, 200, payload);
+  }
+
+  async function hrSchedulePeriodCreate(req, res, context) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req);
+    const result = hrSchedules.createPeriod(db, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.schedule_period_created", "Periodo semanal creado", result, body, "hr_schedule_period");
+    sendJson(res, 201, result);
+  }
+
+  function hrScheduleApplyDefault(req, res, context, periodId) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const result = hrSchedules.applyDefaultShifts(db, periodId, context.user.id);
+    moduleAudit(req, context, "hr", "hr.schedule_defaults_applied", "Turnos predeterminados aplicados", result, { periodId }, "hr_schedule_version");
+    sendJson(res, 200, result);
+  }
+
+  function hrScheduleCopyPrevious(req, res, context, periodId) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const result = hrSchedules.copyPreviousWeek(db, periodId, context.user.id);
+    moduleAudit(req, context, "hr", "hr.schedule_previous_copied", "Semana anterior copiada", result, { periodId }, "hr_schedule_version");
+    sendJson(res, 200, result);
+  }
+
+  async function hrScheduleImport(req, res, context, periodId) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req);
+    const result = await hrSchedules.importSchedule(db, periodId, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.schedule_imported", "Horarios programados importados", result,
+      { originalName: body.originalName, imported: result.imported, errorCount: result.errors.length }, "hr_schedule_import_batch");
+    sendJson(res, 200, result);
+  }
+
+  async function hrScheduleEntrySave(req, res, context, versionId) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
+    const result = hrSchedules.saveScheduledEntry(db, versionId, body);
+    moduleAudit(req, context, "hr", "hr.schedule_entry_saved", "Horario programado guardado", result, body, "hr_scheduled_shift");
+    sendJson(res, 200, result);
+  }
+
+  function hrSchedulePublish(req, res, context, versionId) {
+    requirePermission(context, "hr.approve"); requireHrAdministrator(context);
+    const result = hrSchedules.publishVersion(db, versionId, context.user.id);
+    moduleAudit(req, context, "hr", "hr.schedule_published", "Versión de horarios publicada", result, { versionId }, "hr_schedule_version");
+    sendJson(res, 200, result);
+  }
+
+  async function hrActualShiftCapture(req, res, context) {
+    requirePermission(context, "hr.operate");
+    const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
+    const result = hrSchedules.captureActual(db, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.actual_shift_captured", "Horario real capturado", result, body, "hr_actual_shift_version");
+    sendJson(res, 201, result);
+  }
+
+  async function hrActualShiftImport(req, res, context) {
+    requirePermission(context, "hr.manage"); requireHrAdministrator(context);
+    const body = await readJson(req);
+    const result = await hrSchedules.importActual(db, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.actual_shifts_imported", "Horarios reales importados", result,
+      { originalName: body.originalName, imported: result.imported, errorCount: result.errors.length }, "hr_schedule_import_batch");
+    sendJson(res, 200, result);
+  }
+
+  async function hrScheduleCorrectionCreate(req, res, context) {
+    requirePermission(context, "hr.operate");
+    const body = await readJson(req);
+    assertEmployeeAccess(db, context.user.id, body.employeeId, HttpError);
+    const result = hrSchedules.requestCorrection(db, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.schedule_correction_requested", "Corrección de horario solicitada", result, body, "hr_schedule_correction");
+    sendJson(res, 201, result);
+  }
+
+  async function hrScheduleCorrectionAction(req, res, context, id) {
+    requirePermission(context, "hr.approve"); requireHrAdministrator(context);
+    const body = await readJson(req);
+    const correction = db.prepare("SELECT employee_id FROM hr_schedule_corrections WHERE id = ?").get(id);
+    if (correction) assertEmployeeAccess(db, context.user.id, correction.employee_id, HttpError);
+    const result = hrSchedules.correctionAction(db, id, body, context.user.id);
+    moduleAudit(req, context, "hr", `hr.schedule_correction_${body.action}`, "Corrección de horario atendida", result, body, "hr_schedule_correction");
+    sendJson(res, 200, result);
+  }
+
   async function hrLeaveAction(req, res, context, id) {
     const body = await readJson(req);
     requirePermission(context, ["approve", "reject"].includes(body.action) ? "hr.approve" : "hr.operate");
+    const leave = db.prepare("SELECT employee_id FROM hr_leave_requests WHERE id = ?").get(id);
+    if (leave) assertEmployeeAccess(db, context.user.id, leave.employee_id, HttpError);
+    const identity = laborIdentityForUser(db, context.user.id);
+    if (["approve", "reject"].includes(body.action) && identity && identity.identityType !== "manager")
+      throw new HttpError(403, "Solamente el Administrador RH puede aprobar o rechazar solicitudes.");
     const result = hr.leaveAction(db, id, body, context.user.id);
+    const portalMessages = {
+      approve: ["Solicitud aprobada", `Tu solicitud ${result.folio} fue aprobada.`],
+      reject: ["Solicitud rechazada", `Tu solicitud ${result.folio} fue rechazada: ${body.reason || "Consulta a Recursos Humanos."}`],
+      cancel: ["Solicitud cancelada", `La solicitud ${result.folio} fue cancelada.`],
+      close: ["Solicitud cerrada", `La solicitud ${result.folio} fue cerrada.`],
+    };
+    if (portalMessages[body.action]) hrPortal.notify(db, leave.employee_id, ...portalMessages[body.action],
+      body.action === "approve" ? "success" : body.action === "reject" ? "warning" : "info",
+      "hr_leave_request", id, context.user.id);
     moduleAudit(req, context, "hr", `hr.leave_${body.action}`, "Solicitud de ausencia actualizada", result, body, "hr_leave_request");
     sendJson(res, 200, result);
   }
 
   function listAreas(res, context) {
-    requirePermission(context, "areas.view");
+    requireAnyPermission(context, ["areas.view", "hr.view"]);
     const areas = db.prepare(`SELECT a.id, a.code, a.name, a.description, a.is_active, a.created_at,
       COUNT(ua.user_id) AS users_count FROM areas a LEFT JOIN user_areas ua ON ua.area_id = a.id
       GROUP BY a.id ORDER BY a.name COLLATE NOCASE`).all();
@@ -1875,7 +2716,7 @@ export function createTenantApplication(options = {}) {
   }
 
   async function createArea(req, res, context) {
-    requirePermission(context, "areas.manage");
+    requireAnyPermission(context, ["areas.manage", "hr.approve"]);
     const body = await readJson(req);
     const code = cleanText(body.code, 30)?.toUpperCase();
     const name = cleanText(body.name, 120);
@@ -1885,7 +2726,7 @@ export function createTenantApplication(options = {}) {
       const result = db.prepare("INSERT INTO areas (code, name, description) VALUES (?, ?, ?)").run(code, name, description);
       const id = Number(result.lastInsertRowid);
       audit(db, { userId: context.user.id, action: "areas.created", module: "areas", entityType: "area", entityId: id, summary: `Área ${name} creada`, ip: requestIp(req) });
-      sendJson(res, 201, { area: db.prepare("SELECT * FROM areas WHERE id = ?").get(id) });
+      sendJson(res, 201, { area: db.prepare("SELECT * FROM areas WHERE id = ?").get(id), id, folio: code });
     } catch (error) {
       if (String(error.message).includes("UNIQUE constraint failed")) throw new HttpError(409, "El código de área ya existe.");
       throw error;
@@ -1893,7 +2734,7 @@ export function createTenantApplication(options = {}) {
   }
 
   async function updateArea(req, res, context, id) {
-    requirePermission(context, "areas.manage");
+    requireAnyPermission(context, ["areas.manage", "hr.approve"]);
     const existing = db.prepare("SELECT * FROM areas WHERE id = ?").get(id);
     if (!existing) throw new HttpError(404, "Área no encontrada.");
     const body = await readJson(req);
@@ -1904,7 +2745,7 @@ export function createTenantApplication(options = {}) {
     db.prepare("UPDATE areas SET name = ?, description = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(name, description, isActive, id);
     audit(db, { userId: context.user.id, action: "areas.updated", module: "areas", entityType: "area", entityId: id, summary: `Área ${existing.code} actualizada`, ip: requestIp(req) });
-    sendJson(res, 200, { area: db.prepare("SELECT * FROM areas WHERE id = ?").get(id) });
+    sendJson(res, 200, { area: db.prepare("SELECT * FROM areas WHERE id = ?").get(id), id, folio: existing.code });
   }
 
   function listAudit(res, context, url) {
@@ -1986,9 +2827,26 @@ export function createTenantApplication(options = {}) {
   function listDocuments(res, context) {
     requirePermission(context, "documents.view");
     const documents = db.prepare(`SELECT d.id, d.module, d.entity_type, d.entity_id, d.original_name, d.mime_type,
-      d.size_bytes, d.description, d.created_at, u.full_name AS uploaded_by_name
-      FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by ORDER BY d.id DESC LIMIT 200`).all();
-    sendJson(res, 200, { documents });
+      d.size_bytes, d.description, d.sensitivity, d.employee_id, d.document_type_id, d.issue_date,
+      d.expiry_date, d.version_number, d.replaces_document_id, d.is_current, d.created_at,
+      u.full_name AS uploaded_by_name, e.employee_number, e.full_name AS employee_name,
+      dt.code AS document_type_code, dt.name AS document_type_name
+      FROM documents d
+      LEFT JOIN users u ON u.id = d.uploaded_by
+      LEFT JOIN employees e ON e.id = d.employee_id
+      LEFT JOIN hr_document_types dt ON dt.id = d.document_type_id
+      WHERE d.deleted_at IS NULL ORDER BY d.id DESC LIMIT 200`).all();
+    const identity = laborIdentityForUser(db, context.user.id);
+    const allowedDocuments = documents.filter((document) =>
+      (!document.employee_id || canAccessEmployee(db, context.user.id, document.employee_id))
+      && canAccessSensitiveDocument(identity, document.sensitivity));
+    const documentTypes = db.prepare(`SELECT id, code, name, sensitivity, required_for_active,
+      requires_issue_date, requires_expiry_date FROM hr_document_types WHERE is_active = 1 ORDER BY name`).all()
+      .filter((type) => canAccessSensitiveDocument(identity, type.sensitivity));
+    const employees = db.prepare(`SELECT id, employee_number, full_name FROM employees
+      ORDER BY status = 'active' DESC, full_name`).all()
+      .filter((employee) => canAccessEmployee(db, context.user.id, employee.id));
+    sendJson(res, 200, { documents: allowedDocuments, documentTypes, employees });
   }
 
   async function uploadDocument(req, res, context) {
@@ -1999,7 +2857,32 @@ export function createTenantApplication(options = {}) {
     const description = cleanOptionalText(body.description, 500) ?? "";
     const entityType = cleanOptionalText(body.entityType, 80);
     const entityId = cleanOptionalText(body.entityId, 80);
+    const employeeId = body.employeeId == null || body.employeeId === "" ? null : Number(body.employeeId);
+    const documentTypeId = body.documentTypeId == null || body.documentTypeId === ""
+      ? null : Number(body.documentTypeId);
+    if (documentTypeId != null && !Number.isInteger(documentTypeId))
+      throw new HttpError(400, "El tipo documental no es válido.");
+    const documentType = documentTypeId == null ? null
+      : db.prepare("SELECT * FROM hr_document_types WHERE id = ? AND is_active = 1").get(documentTypeId);
+    if (documentTypeId != null && !documentType) throw new HttpError(400, "El tipo documental no existe o está inactivo.");
+    const sensitivity = documentType?.sensitivity || String(body.sensitivity ?? "standard").trim().toLowerCase();
+    const issueDate = cleanOptionalDate(body.issueDate, "fecha de emisión");
+    const expiryDate = cleanOptionalDate(body.expiryDate, "fecha de vencimiento");
     const mimeType = cleanText(body.mimeType, 120) || "application/octet-stream";
+    if (!["standard", "fiscal", "salary", "cfdi", "medical"].includes(sensitivity))
+      throw new HttpError(400, "La clasificaci\u00f3n del documento no es v\u00e1lida.");
+    if (employeeId && !Number.isInteger(employeeId)) throw new HttpError(400, "El trabajador del documento no es v\u00e1lido.");
+    if (employeeId && !documentType) throw new HttpError(400, "Selecciona la clasificación del documento del trabajador.");
+    if (documentType?.requires_issue_date && !issueDate)
+      throw new HttpError(400, "La fecha de emisión es obligatoria para este tipo documental.");
+    if (documentType?.requires_expiry_date && !expiryDate)
+      throw new HttpError(400, "La fecha de vencimiento es obligatoria para este tipo documental.");
+    if (issueDate && expiryDate && expiryDate < issueDate)
+      throw new HttpError(400, "La fecha de vencimiento no puede ser anterior a la emisión.");
+    if (employeeId) assertEmployeeAccess(db, context.user.id, employeeId, HttpError);
+    const identity = laborIdentityForUser(db, context.user.id);
+    if (!canAccessSensitiveDocument(identity, sensitivity))
+      throw new HttpError(403, "No tienes autorizaci\u00f3n para cargar esta clase de documento sensible.");
     if (!originalName || !module || !/^[a-z0-9_-]+$/.test(module)) throw new HttpError(400, "Captura un archivo y módulo válidos.");
     let bytes;
     try { bytes = Buffer.from(String(body.contentBase64 ?? ""), "base64"); }
@@ -2010,21 +2893,52 @@ export function createTenantApplication(options = {}) {
     const storedName = `${createOpaqueToken(18)}${extension}`;
     const storagePath = `database:${storedName}`;
     const checksum = createHash("sha256").update(bytes).digest("hex");
-    const result = db.prepare(`INSERT INTO documents
-      (module, entity_type, entity_id, original_name, stored_name, mime_type, size_bytes, storage_path, checksum, description, uploaded_by, content_data)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(module, entityType, entityId, originalName, storedName, mimeType, bytes.length, storagePath, checksum, description, context.user.id, bytes);
-    const id = Number(result.lastInsertRowid);
+    let id;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const previous = employeeId && documentTypeId ? db.prepare(`SELECT id, version_number FROM documents
+        WHERE employee_id = ? AND document_type_id = ? AND is_current = 1 AND deleted_at IS NULL
+        ORDER BY version_number DESC, id DESC LIMIT 1`).get(employeeId, documentTypeId) : null;
+      const versionNumber = Number(previous?.version_number || 0) + 1;
+      if (previous) db.prepare("UPDATE documents SET is_current = 0 WHERE id = ?").run(previous.id);
+      const result = db.prepare(`INSERT INTO documents
+        (module, entity_type, entity_id, original_name, stored_name, mime_type, size_bytes, storage_path, checksum,
+         description, uploaded_by, content_data, sensitivity, employee_id, document_type_id, issue_date,
+         expiry_date, version_number, replaces_document_id, is_current)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+        .run(module, entityType, entityId, originalName, storedName, mimeType, bytes.length, storagePath, checksum,
+          description, context.user.id, bytes, sensitivity, employeeId, documentTypeId, issueDate,
+          expiryDate, versionNumber, previous?.id || null);
+      id = Number(result.lastInsertRowid);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
     audit(db, { userId: context.user.id, action: "documents.uploaded", module: "documents", entityType: "document", entityId: id, summary: `Documento ${originalName} cargado`, details: { module, entityType, entityId, sizeBytes: bytes.length }, ip: requestIp(req) });
     sendJson(res, 201, { id });
   }
 
-  async function downloadDocument(res, context, id) {
+  function getDocument(req, res, context, id) {
     requirePermission(context, "documents.view");
-    const document = db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
-    if (!document) throw new HttpError(404, "Documento no encontrado.");
+    const document = documentRecord(id);
+    assertDocumentAccess(context, document);
+    recordDocumentAccess(req, context, document, "consult");
+    const { content_data: _content, storage_path: _storage, ...safeDocument } = document;
+    const accessLog = context.user.permissions.includes("documents.manage") ? db.prepare(`SELECT l.id, l.action,
+      l.document_name, l.sensitivity, l.ip_address, l.created_at, u.full_name AS user_name
+      FROM hr_document_access_log l LEFT JOIN users u ON u.id = l.user_id
+      WHERE l.document_id = ? ORDER BY l.id DESC LIMIT 100`).all(id) : [];
+    sendJson(res, 200, { document: safeDocument, accessLog });
+  }
+
+  async function downloadDocument(req, res, context, id) {
+    requirePermission(context, "documents.view");
+    const document = documentRecord(id);
+    assertDocumentAccess(context, document);
     try {
       const data = document.content_data || await readFile(document.storage_path);
+      recordDocumentAccess(req, context, document, "download");
       res.writeHead(200, {
         "Content-Type": document.mime_type,
         "Content-Length": data.length,
@@ -2040,24 +2954,61 @@ export function createTenantApplication(options = {}) {
 
   async function deleteDocument(req, res, context, id) {
     requirePermission(context, "documents.manage");
-    const document = db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
-    if (!document) throw new HttpError(404, "Documento no encontrado.");
-    db.prepare("DELETE FROM documents WHERE id = ?").run(id);
-    if (!document.content_data) await unlink(document.storage_path).catch(() => {});
+    const document = documentRecord(id);
+    assertDocumentAccess(context, document);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare(`UPDATE documents SET is_current = 0, deleted_at = CURRENT_TIMESTAMP, deleted_by = ?
+        WHERE id = ?`).run(context.user.id, id);
+      if (document.is_current && document.replaces_document_id)
+        db.prepare("UPDATE documents SET is_current = 1 WHERE id = ? AND deleted_at IS NULL").run(document.replaces_document_id);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
     audit(db, { userId: context.user.id, action: "documents.deleted", module: "documents", entityType: "document", entityId: id, summary: `Documento ${document.original_name} eliminado`, ip: requestIp(req) });
     sendJson(res, 200, { ok: true });
+  }
+
+  function documentRecord(id) {
+    const document = db.prepare(`SELECT d.*, dt.code AS document_type_code, dt.name AS document_type_name,
+      e.employee_number, e.full_name AS employee_name, u.full_name AS uploaded_by_name
+      FROM documents d
+      LEFT JOIN hr_document_types dt ON dt.id = d.document_type_id
+      LEFT JOIN employees e ON e.id = d.employee_id
+      LEFT JOIN users u ON u.id = d.uploaded_by
+      WHERE d.id = ? AND d.deleted_at IS NULL`).get(id);
+    if (!document) throw new HttpError(404, "Documento no encontrado.");
+    return document;
+  }
+
+  function assertDocumentAccess(context, document) {
+    if (document.employee_id) assertEmployeeAccess(db, context.user.id, document.employee_id, HttpError);
+    if (!canAccessSensitiveDocument(laborIdentityForUser(db, context.user.id), document.sensitivity))
+      throw new HttpError(403, "No tienes autorización para consultar este documento sensible.");
+  }
+
+  function recordDocumentAccess(req, context, document, action) {
+    db.prepare(`INSERT INTO hr_document_access_log
+      (document_id, employee_id, user_id, action, document_name, sensitivity, ip_address)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(document.id, document.employee_id, context.user.id, action, document.original_name,
+        document.sensitivity, requestIp(req));
   }
 
   function getSettings(res, context) {
     requirePermission(context, "settings.view");
     const settings = Object.fromEntries(db.prepare("SELECT key, value, value_type, description, updated_at FROM app_settings ORDER BY key").all().map((row) => [row.key, row]));
-    sendJson(res, 200, { settings });
+    sendJson(res, 200, { settings, managedCompany: config.company });
   }
 
   async function updateSettings(req, res, context) {
     requirePermission(context, "settings.manage");
     const body = await readJson(req);
-    const allowed = ["company_name", "timezone", "session_hours"];
+    if (Object.prototype.hasOwnProperty.call(body, "company_name"))
+      throw new HttpError(409, "El nombre de la empresa se administra exclusivamente desde el Centro de Gestión.");
+    const allowed = ["timezone", "session_hours"];
     const update = db.prepare("UPDATE app_settings SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -2127,6 +3078,7 @@ export function createTenantApplication(options = {}) {
     recordLoginFailure,
     hasActiveSessionToken,
     loginWithCredentials: (req, res, body) => login(req, res, body),
+    syncManagedCompany,
     close: () => db.close(),
   };
 }
@@ -2251,12 +3203,12 @@ function assignIds(db, table, ownerColumn, targetColumn, ownerId, ids) {
   for (const id of ids) insert.run(ownerId, id);
 }
 
-async function readJson(req) {
+async function readJson(req, limit = JSON_LIMIT) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > JSON_LIMIT) throw new HttpError(413, "La solicitud es demasiado grande.");
+    if (size > limit) throw new HttpError(413, "La solicitud es demasiado grande.");
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -2269,14 +3221,43 @@ async function readJson(req) {
 
 function sendJson(res, status, body) {
   if (res.headersSent) return;
-  const data = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(data) });
+  const data = Buffer.from(JSON.stringify(body));
+  const acceptsGzip = /(?:^|,)\s*gzip\s*(?:,|$)/i.test(String(res.abicorpRequest?.headers?.["accept-encoding"] ?? ""));
+  if (acceptsGzip && data.length >= JSON_COMPRESSION_THRESHOLD) {
+    const compressed = gzipSync(data, { level: 6 });
+    if (compressed.length < data.length) {
+      const vary = String(res.getHeader("Vary") ?? "");
+      res.setHeader("Vary", vary ? `${vary}, Accept-Encoding` : "Accept-Encoding");
+      res.writeHead(status, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Encoding": "gzip",
+        "Content-Length": compressed.length,
+      });
+      return res.end(compressed);
+    }
+  }
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": data.length });
   res.end(data);
+}
+
+function portalSessionCookie(token, maxAgeSeconds) {
+  return `erp_portal_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeSeconds}`;
+}
+
+function clearPortalSessionCookie() {
+  return "erp_portal_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+}
+
+function portalCanAccessDocument(session, sensitivity) {
+  if (sensitivity === "salary") return Boolean(session.can_view_salary);
+  if (sensitivity === "cfdi") return Boolean(session.can_view_cfdi);
+  if (sensitivity === "medical") return Boolean(session.can_view_medical);
+  return Boolean(session.can_view_file);
 }
 
 async function serveStatic(req, res, pathname) {
   if (!["GET", "HEAD"].includes(req.method ?? "GET")) throw new HttpError(405, "Método no permitido.");
-  const requested = pathname === "/" ? "index.html" : pathname.slice(1);
+  const requested = pathname === "/" ? "index.html" : pathname === "/portal" ? "portal.html" : pathname.slice(1);
   const safe = normalize(requested).replace(/^(\.\.[/\\])+/, "");
   let filePath = join(PUBLIC_DIR, safe);
   if (!filePath.startsWith(PUBLIC_DIR)) throw new HttpError(404, "Archivo no encontrado.");
@@ -2330,6 +3311,16 @@ function cleanText(value, max) {
 function cleanOptionalText(value, max) {
   const clean = cleanText(value, max);
   return clean || null;
+}
+
+function cleanOptionalDate(value, label) {
+  const clean = cleanText(value, 10);
+  if (!clean) return null;
+  const parsed = new Date(`${clean}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean) || Number.isNaN(parsed.getTime())
+    || parsed.toISOString().slice(0, 10) !== clean)
+    throw new HttpError(400, `La ${label} no es válida.`);
+  return clean;
 }
 
 function parseEmployeePhoto(body) {

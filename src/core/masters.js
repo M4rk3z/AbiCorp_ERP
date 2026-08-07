@@ -108,7 +108,7 @@ export const masterDefinitions = {
     select: `SELECT p.id, p.code, p.name, p.list_type, p.currency_id, p.valid_from, p.valid_to,
       p.is_active, p.created_at, p.updated_at, c.code AS currency_code, COUNT(pi.id) AS items_count
       FROM price_lists p JOIN currencies c ON c.id = p.currency_id
-      LEFT JOIN price_list_items pi ON pi.price_list_id = p.id GROUP BY p.id ORDER BY p.name`,
+      LEFT JOIN price_list_items pi ON pi.price_list_id = p.id GROUP BY p.id, c.code ORDER BY p.name`,
     fields: {
       code: { type: "code", required: true, max: 40 },
       name: { type: "text", required: true, max: 140 },

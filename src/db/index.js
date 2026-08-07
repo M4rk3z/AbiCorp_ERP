@@ -33,6 +33,52 @@ export function openDatabase({
   return { db, dbPath: usePostgres ? `postgres:${schema}` : dbPath };
 }
 
+export function synchronizeManagedCompanyIdentity(db, company) {
+  const legalName = String(company?.legalName ?? company?.legal_name ?? "").trim();
+  if (!legalName) return null;
+  const tradeName = String(company?.tradeName ?? company?.trade_name ?? legalName).trim() || legalName;
+  const code = String(company?.code ?? "").trim().toUpperCase();
+  const stored = db.prepare("SELECT value FROM app_settings WHERE key = 'managed_company_id'").get();
+  let record = stored?.value
+    ? db.prepare("SELECT id, code FROM companies WHERE id = ?").get(Number(stored.value))
+    : null;
+  if (!record && code) record = db.prepare("SELECT id, code FROM companies WHERE UPPER(code) = ?").get(code);
+  if (!record) record = db.prepare(`SELECT id, code FROM companies
+    WHERE LOWER(legal_name) = LOWER(?) OR LOWER(trade_name) = LOWER(?) ORDER BY id LIMIT 1`)
+    .get(legalName, tradeName);
+  if (!record) {
+    // Una base de empresa puede contener una identidad laboral previa con otro
+    // nombre. Reutilizamos la que ya sostiene más relaciones para conservar IDs,
+    // expedientes, centros y departamentos al adoptar el nombre del Gestor.
+    record = db.prepare(`SELECT c.id, c.code,
+      ((SELECT COUNT(*) FROM employees e WHERE e.company_id = c.id) +
+       (SELECT COUNT(*) FROM hr_work_centers wc WHERE wc.company_id = c.id) +
+       (SELECT COUNT(*) FROM hr_departments d WHERE d.company_id = c.id)) AS related_count
+      FROM companies c ORDER BY related_count DESC, c.id LIMIT 1`).get();
+  }
+  if (!record) {
+    let internalCode = code || "EMP-GESTOR";
+    let suffix = 1;
+    while (db.prepare("SELECT id FROM companies WHERE UPPER(code) = UPPER(?)").get(internalCode))
+      internalCode = `${code || "EMP-GESTOR"}-${++suffix}`;
+    const result = db.prepare(`INSERT INTO companies (code, legal_name, trade_name, tax_id, is_active)
+      VALUES (?, ?, ?, '', 1)`).run(internalCode, legalName, tradeName);
+    record = { id: Number(result.lastInsertRowid), code: internalCode };
+  } else {
+    db.prepare(`UPDATE companies SET legal_name = ?, trade_name = ?, is_active = 1,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(legalName, tradeName, record.id);
+  }
+  db.prepare(`INSERT INTO app_settings (key, value, value_type, description, updated_at)
+    VALUES ('managed_company_id', ?, 'number', 'Empresa laboral vinculada al Centro de Gestión', CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`)
+    .run(String(record.id));
+  db.prepare(`INSERT INTO app_settings (key, value, value_type, description, updated_at)
+    VALUES ('company_name', ?, 'string', 'Nombre definido desde el Centro de Gestión', CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, description = excluded.description,
+      updated_at = CURRENT_TIMESTAMP`).run(tradeName);
+  return Number(record.id);
+}
+
 function applyMigrations(db, { usePostgres = false } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -117,8 +163,8 @@ function seedCore(db, { initialAdminUser, initialAdminPassword, seedAdmin }) {
     for (const permission of basePermissions) insertPermission.run(...permission);
 
     db.prepare("UPDATE permissions SET min_level = 1 WHERE action = 'view'").run();
-    db.prepare("UPDATE permissions SET min_level = 2 WHERE code IN ('catalogs.manage', 'folios.manage', 'documents.manage', 'masters.manage', 'inventory.operate', 'inventory.count', 'sales.manage', 'sales.fulfill', 'production.manage', 'production.execute', 'quality.manage', 'quality.inspect', 'maintenance.manage', 'maintenance.execute', 'logistics.manage', 'logistics.execute', 'finance.manage', 'finance.operate', 'tasks.manage', 'tasks.operate', 'purchases.manage', 'purchases.receive', 'safety.manage', 'safety.operate', 'hr.manage', 'hr.operate')").run();
-    db.prepare("UPDATE permissions SET min_level = 3 WHERE module = 'workflow' OR code IN ('inventory.adjust', 'sales.approve', 'production.close', 'quality.release', 'maintenance.close', 'logistics.confirm', 'finance.approve', 'tasks.approve', 'purchases.approve', 'safety.approve', 'hr.approve')").run();
+    db.prepare("UPDATE permissions SET min_level = 2 WHERE code IN ('catalogs.manage', 'folios.manage', 'documents.manage', 'masters.manage', 'inventory.operate', 'inventory.count', 'sales.manage', 'sales.fulfill', 'production.manage', 'production.execute', 'quality.manage', 'quality.inspect', 'maintenance.manage', 'maintenance.execute', 'logistics.manage', 'logistics.execute', 'finance.manage', 'finance.operate', 'tasks.manage', 'tasks.operate', 'purchases.manage', 'purchases.receive', 'safety.manage', 'safety.operate', 'hr.manage', 'hr.operate', 'payroll.manage', 'payroll.operate')").run();
+    db.prepare("UPDATE permissions SET min_level = 3 WHERE module = 'workflow' OR code IN ('inventory.adjust', 'sales.approve', 'production.close', 'quality.release', 'maintenance.close', 'logistics.confirm', 'finance.approve', 'tasks.approve', 'purchases.approve', 'safety.approve', 'hr.approve', 'payroll.approve')").run();
     db.prepare("UPDATE permissions SET min_level = 4 WHERE code IN ('users.manage', 'roles.manage', 'notifications.manage', 'settings.manage')").run();
 
     for (const permission of basePermissions) insertRolePermission.run("ADMIN", permission[0]);
