@@ -42,7 +42,11 @@ export function visibleEmployeeIds(db, userId, knownIdentity = undefined) {
     return new Set(db.prepare(`SELECT id FROM employees WHERE work_center_id IN (${placeholders})`)
       .all(...identity.workCenterIds).map((row) => Number(row.id)));
   }
-  if (!identity.companyIds.length) return new Set();
+  // En el modelo simplificado del Centro, una lista vacia representa toda la
+  // empresa alojada en esta base tenant. Se devuelve el conjunto completo para
+  // conservar la aplicacion de permisos sensibles y el filtrado de documentos.
+  if (!identity.companyIds.length)
+    return new Set(db.prepare("SELECT id FROM employees").all().map((row) => Number(row.id)));
   const placeholders = identity.companyIds.map(() => "?").join(",");
   return new Set(db.prepare(`SELECT id FROM employees WHERE company_id IN (${placeholders})`)
     .all(...identity.companyIds).map((row) => Number(row.id)));

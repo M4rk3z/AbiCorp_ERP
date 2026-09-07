@@ -10,8 +10,9 @@ export function options(db) {
     items: db.prepare(`SELECT i.id, i.sku, i.name, u.symbol AS unit_symbol
       FROM items i LEFT JOIN units_of_measure u ON u.id = i.unit_id WHERE i.is_active = 1 ORDER BY i.name`).all(),
     plans: db.prepare(`SELECT p.id, p.folio, p.name, p.inspection_type, p.item_id, i.sku, i.name AS item_name,
-      COUNT(c.id) AS check_count FROM quality_inspection_plans p LEFT JOIN items i ON i.id = p.item_id
-      LEFT JOIN quality_plan_checks c ON c.plan_id = p.id WHERE p.is_active = 1 GROUP BY p.id ORDER BY p.name`).all(),
+      (SELECT COUNT(*) FROM quality_plan_checks c WHERE c.plan_id = p.id) AS check_count
+      FROM quality_inspection_plans p LEFT JOIN items i ON i.id = p.item_id
+      WHERE p.is_active = 1 ORDER BY p.name`).all(),
     orders: db.prepare(`SELECT o.id, o.folio, o.item_id, o.status, i.sku, i.name AS item_name
       FROM production_orders o JOIN items i ON i.id = o.item_id
       WHERE o.status IN ('released','in_progress','paused','completed') ORDER BY o.id DESC`).all(),
@@ -24,9 +25,10 @@ export function options(db) {
 }
 
 export function control(db) {
-  const plans = db.prepare(`SELECT p.*, i.sku, i.name AS item_name, COUNT(c.id) AS check_count
+  const plans = db.prepare(`SELECT p.*, i.sku, i.name AS item_name,
+    (SELECT COUNT(*) FROM quality_plan_checks c WHERE c.plan_id = p.id) AS check_count
     FROM quality_inspection_plans p LEFT JOIN items i ON i.id = p.item_id
-    LEFT JOIN quality_plan_checks c ON c.plan_id = p.id GROUP BY p.id ORDER BY p.id DESC`).all();
+    ORDER BY p.id DESC`).all();
   const inspections = db.prepare(`SELECT q.*, i.sku, i.name AS item_name, p.name AS plan_name, o.folio AS order_folio,
     w.name AS warehouse_name, lot.lot_number, u.full_name AS inspected_by_name,
     (SELECT COUNT(*) FROM quality_inspection_results r WHERE r.inspection_id = q.id) AS result_count,
@@ -36,11 +38,12 @@ export function control(db) {
     LEFT JOIN warehouses w ON w.id = q.warehouse_id LEFT JOIN inventory_lots lot ON lot.id = q.lot_id
     LEFT JOIN users u ON u.id = q.inspected_by ORDER BY q.id DESC`).all();
   const nonconformities = db.prepare(`SELECT n.*, i.sku, i.name AS item_name, q.folio AS inspection_folio,
-    o.folio AS order_folio, COUNT(a.id) AS action_count,
-    SUM(CASE WHEN a.status IN ('verified','closed') THEN 1 ELSE 0 END) AS completed_actions
+    o.folio AS order_folio,
+    (SELECT COUNT(*) FROM quality_corrective_actions a WHERE a.nonconformity_id = n.id) AS action_count,
+    (SELECT COUNT(*) FROM quality_corrective_actions a WHERE a.nonconformity_id = n.id AND a.status IN ('verified','closed')) AS completed_actions
     FROM quality_nonconformities n JOIN items i ON i.id = n.item_id
     LEFT JOIN quality_inspections q ON q.id = n.inspection_id LEFT JOIN production_orders o ON o.id = n.production_order_id
-    LEFT JOIN quality_corrective_actions a ON a.nonconformity_id = n.id GROUP BY n.id ORDER BY n.id DESC`).all();
+    ORDER BY n.id DESC`).all();
   const actions = db.prepare(`SELECT a.*, n.folio AS nonconformity_folio, i.sku, i.name AS item_name,
     u.full_name AS owner_name FROM quality_corrective_actions a
     JOIN quality_nonconformities n ON n.id = a.nonconformity_id JOIN items i ON i.id = n.item_id

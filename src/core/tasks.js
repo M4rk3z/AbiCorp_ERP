@@ -28,10 +28,11 @@ export function control(db, userId) {
     JOIN users a ON a.id = t.assigned_to LEFT JOIN users c ON c.id = t.created_by`;
   const tasks = db.prepare(taskSelect + " ORDER BY CASE WHEN t.status IN ('pending','in_progress','submitted') THEN 0 ELSE 1 END, t.due_date, t.id DESC").all();
   const assigned = db.prepare(taskSelect + " WHERE t.assigned_to = ? ORDER BY CASE t.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, t.due_date, t.id DESC").all(userId);
-  const flows = db.prepare(`SELECT f.*, u.full_name AS created_by_name, COUNT(s.id) AS step_count,
-    GROUP_CONCAT(s.sequence || '. ' || s.name, ' → ') AS step_summary
-    FROM approval_flows f LEFT JOIN users u ON u.id = f.created_by
-    LEFT JOIN approval_flow_steps s ON s.flow_id = f.id GROUP BY f.id ORDER BY f.is_active DESC, f.name`).all();
+  const flows = db.prepare(`SELECT f.*,
+    (SELECT u.full_name FROM users u WHERE u.id = f.created_by) AS created_by_name,
+    (SELECT COUNT(*) FROM approval_flow_steps s WHERE s.flow_id = f.id) AS step_count,
+    (SELECT GROUP_CONCAT(s.sequence || '. ' || s.name, ' → ') FROM approval_flow_steps s WHERE s.flow_id = f.id) AS step_summary
+    FROM approval_flows f ORDER BY f.is_active DESC, f.name`).all();
   const comments = db.prepare(`SELECT x.*, t.folio AS task_folio, t.title AS task_title,
     u.full_name AS created_by_name FROM workflow_task_comments x
     JOIN workflow_tasks t ON t.id = x.task_id LEFT JOIN users u ON u.id = x.created_by

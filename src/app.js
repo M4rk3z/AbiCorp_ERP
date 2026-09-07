@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { audit, openDatabase, synchronizeManagedCompanyIdentity } from "./db/index.js";
-import { openControlDatabase, resolveCompanyDatabase } from "./db/control.js";
+import { expireDemoCompanies, openControlDatabase, resolveCompanyDatabase } from "./db/control.js";
 import { catalogDefinitions } from "./core/catalogs.js";
 import { masterDefinitions } from "./core/masters.js";
 import * as inventory from "./core/inventory.js";
@@ -21,6 +21,7 @@ import * as hr from "./core/hr.js";
 import * as hrImport from "./core/hr-import.js";
 import * as hrPortal from "./core/hr-portal.js";
 import * as hrSchedules from "./core/hr-schedules.js";
+import * as hrCompliance from "./core/hr-compliance.js";
 import * as payrollCfdi from "./core/payroll-cfdi.js";
 import * as payrollPreparation from "./core/payroll-preparation.js";
 import { createPrivateStorage, PrivateStorageError } from "./core/private-storage.js";
@@ -74,11 +75,13 @@ export function createApplication(options = {}) {
   const tenants = new Map();
 
   function companies(activeOnly = true) {
+    expireDemoCompanies(registry.db);
     return registry.db.prepare(`SELECT id, code, slug, legal_name, trade_name, database_file, status
       FROM companies ${activeOnly ? "WHERE status = 'active'" : ""} ORDER BY legal_name COLLATE NOCASE`).all();
   }
 
   function tenantFor(slug = "") {
+    expireDemoCompanies(registry.db);
     const company = slug
       ? registry.db.prepare("SELECT * FROM companies WHERE slug = ? AND status = 'active'").get(slug)
       : companies(true)[0];
@@ -321,6 +324,7 @@ export function createTenantApplication(options = {}) {
     const priceListLineMatch = path.match(/^\/api\/price-lists\/(\d+)\/items\/(\d+)$/);
     if (priceListLineMatch && method === "PATCH") return updatePriceListItem(req, res, context, Number(priceListLineMatch[1]), Number(priceListLineMatch[2]));
     if (priceListLineMatch && method === "DELETE") return deletePriceListItem(req, res, context, Number(priceListLineMatch[1]), Number(priceListLineMatch[2]));
+    if (path === "/api/inventory/overview" && method === "GET") return inventoryOverview(res, context);
     if (path === "/api/inventory/options" && method === "GET") return inventoryOptions(res, context);
     if (path === "/api/inventory/balances" && method === "GET") return inventoryBalances(res, context);
     if (path === "/api/inventory/movements" && method === "GET") return inventoryMovements(res, context, url);
@@ -502,6 +506,17 @@ export function createTenantApplication(options = {}) {
     if (payrollCfdiFileMatch && method === "GET")
       return payrollCfdiFileDownload(req, res, context, Number(payrollCfdiFileMatch[1]), Number(payrollCfdiFileMatch[2]));
     if (path === "/api/hr/control" && method === "GET") return hrControl(res, context);
+    if (path === "/api/hr/compliance" && method === "GET") return hrComplianceControl(res, context);
+    if (path === "/api/hr/compliance/grievances" && method === "POST") return hrGrievanceCreate(req, res, context);
+    const hrGrievanceMatch = path.match(/^\/api\/hr\/compliance\/grievances\/(\d+)$/);
+    if (hrGrievanceMatch && method === "GET")
+      return hrGrievanceDetail(res, context, Number(hrGrievanceMatch[1]));
+    const hrGrievanceEvidenceMatch = path.match(/^\/api\/hr\/compliance\/grievances\/(\d+)\/evidence$/);
+    if (hrGrievanceEvidenceMatch && method === "POST")
+      return hrGrievanceEvidenceCreate(req, res, context, Number(hrGrievanceEvidenceMatch[1]));
+    const hrGrievanceActionMatch = path.match(/^\/api\/hr\/compliance\/grievances\/(\d+)\/action$/);
+    if (hrGrievanceActionMatch && method === "POST")
+      return hrGrievanceAction(req, res, context, Number(hrGrievanceActionMatch[1]));
     if (path === "/api/hr/people" && method === "POST") return hrPersonCreate(req, res, context);
     if (path === "/api/hr/people/import/template" && method === "GET") return hrPeopleImportTemplate(res, context);
     if (path === "/api/hr/people/import/preview" && method === "POST") return hrPeopleImportPreview(req, res, context);
@@ -576,7 +591,7 @@ export function createTenantApplication(options = {}) {
     if (folioMatch && method === "PATCH") return updateFolio(req, res, context, Number(folioMatch[1]));
     const folioNextMatch = path.match(/^\/api\/folios\/(\d+)\/next$/);
     if (folioNextMatch && method === "POST") return nextFolio(req, res, context, Number(folioNextMatch[1]));
-    if (path === "/api/documents" && method === "GET") return listDocuments(res, context);
+    if (path === "/api/documents" && method === "GET") return listDocuments(res, context, url);
     if (path === "/api/documents" && method === "POST") return uploadDocument(req, res, context);
     const documentDownloadMatch = path.match(/^\/api\/documents\/(\d+)\/download$/);
     if (documentDownloadMatch && method === "GET") return downloadDocument(req, res, context, Number(documentDownloadMatch[1]));
@@ -768,6 +783,8 @@ export function createTenantApplication(options = {}) {
     if (bytes.length > MAX_FILE_BYTES) throw new HttpError(413, "El archivo supera el l\u00edmite de 8 MB.");
     const issueDate = cleanOptionalDate(body.issueDate, "fecha de emisi\u00f3n");
     const expiryDate = cleanOptionalDate(body.expiryDate, "fecha de vencimiento");
+    if (expiryDate && !documentType.allows_expiry_date)
+      throw new HttpError(400, "Este tipo documental no maneja fecha de vencimiento.");
     const extension = extname(originalName).replace(/[^.a-zA-Z0-9]/g, "").slice(0, 12).toLowerCase();
     const storedName = `${createOpaqueToken(18)}${extension}`;
     const mimeType = cleanText(body.mimeType, 120) || "application/octet-stream";
@@ -1411,6 +1428,15 @@ export function createTenantApplication(options = {}) {
   function inventoryOptions(res, context) {
     requirePermission(context, "inventory.view");
     sendJson(res, 200, inventory.inventoryOptions(db));
+  }
+
+  function inventoryOverview(res, context) {
+    requirePermission(context, "inventory.view");
+    sendJson(res, 200, {
+      options: inventory.inventoryOptions(db),
+      balances: inventory.listBalances(db),
+      movements: inventory.listMovements(db),
+    });
   }
 
   function inventoryBalances(res, context) {
@@ -2295,6 +2321,53 @@ export function createTenantApplication(options = {}) {
     sendJson(res, 200, result);
   }
 
+  function hrComplianceControl(res, context) {
+    requirePermission(context, "hr.compliance.view");
+    requireHrAdministrator(context);
+    sendJson(res, 200, hrCompliance.control(db));
+  }
+
+  function hrGrievanceDetail(res, context, id) {
+    requirePermission(context, "hr.compliance.view");
+    requireHrAdministrator(context);
+    sendJson(res, 200, hrCompliance.detail(db, id));
+  }
+
+  async function hrGrievanceCreate(req, res, context) {
+    requirePermission(context, "hr.compliance.manage");
+    requireHrAdministrator(context);
+    const body = await readJson(req);
+    const result = hrCompliance.createCase(db, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.grievance_created", "Caso confidencial registrado", result,
+      { category: body.category, severity: body.severity, reporterType: body.reporterType,
+        confidentiality: body.confidentiality }, "hr_grievance_case");
+    sendJson(res, 201, result);
+  }
+
+  async function hrGrievanceEvidenceCreate(req, res, context, id) {
+    requirePermission(context, "hr.compliance.manage");
+    requireHrAdministrator(context);
+    const body = await readJson(req);
+    const result = hrCompliance.addEvidence(db, id, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.grievance_evidence_added", "Evidencia confidencial registrada", result,
+      { evidenceType: body.evidenceType, sensitivity: body.sensitivity, hasDocument: Boolean(body.documentId) },
+      "hr_grievance_evidence");
+    sendJson(res, 201, result);
+  }
+
+  async function hrGrievanceAction(req, res, context, id) {
+    const body = await readJson(req);
+    const permission = ["resolve", "close", "reopen", "dismiss"].includes(body.action)
+      ? "hr.grievances.resolve" : "hr.grievances.investigate";
+    requirePermission(context, permission);
+    requireHrAdministrator(context);
+    const result = hrCompliance.action(db, id, body, context.user.id);
+    moduleAudit(req, context, "hr", "hr.grievance_action", "Caso confidencial actualizado", result,
+      { action: body.action, nextStatus: result.status, investigatorAssigned: Boolean(body.investigatorUserId) },
+      "hr_grievance_case");
+    sendJson(res, 200, result);
+  }
+
   function hrControl(res, context) {
     requirePermission(context, "hr.view");
     const now = Date.now();
@@ -2867,8 +2940,14 @@ export function createTenantApplication(options = {}) {
     }
   }
 
-  function listDocuments(res, context) {
+  function listDocuments(res, context, url) {
     requirePermission(context, "documents.view");
+    const requestedEmployeeId = url?.searchParams?.get("employeeId");
+    const employeeId = requestedEmployeeId == null || requestedEmployeeId === ""
+      ? null : Number(requestedEmployeeId);
+    if (employeeId != null && (!Number.isInteger(employeeId) || employeeId <= 0))
+      throw new HttpError(400, "El colaborador solicitado no es válido.");
+    if (employeeId != null) assertEmployeeAccess(db, context.user.id, employeeId, HttpError);
     const documents = db.prepare(`SELECT d.id, d.module, d.entity_type, d.entity_id, d.original_name, d.mime_type,
       d.size_bytes, d.description, d.sensitivity, d.employee_id, d.document_type_id, d.issue_date,
       d.expiry_date, d.version_number, d.replaces_document_id, d.is_current, d.created_at,
@@ -2878,13 +2957,15 @@ export function createTenantApplication(options = {}) {
       LEFT JOIN users u ON u.id = d.uploaded_by
       LEFT JOIN employees e ON e.id = d.employee_id
       LEFT JOIN hr_document_types dt ON dt.id = d.document_type_id
-      WHERE d.deleted_at IS NULL ORDER BY d.id DESC LIMIT 200`).all();
+      WHERE d.deleted_at IS NULL AND (? IS NULL OR d.employee_id = ?)
+      ORDER BY d.id DESC LIMIT 200`).all(employeeId, employeeId);
     const identity = laborIdentityForUser(db, context.user.id);
     const allowedDocuments = documents.filter((document) =>
       (!document.employee_id || canAccessEmployee(db, context.user.id, document.employee_id))
       && canAccessSensitiveDocument(identity, document.sensitivity));
     const documentTypes = db.prepare(`SELECT id, code, name, sensitivity, required_for_active,
-      requires_issue_date, requires_expiry_date FROM hr_document_types WHERE is_active = 1 ORDER BY name`).all()
+      requires_issue_date, requires_expiry_date, allows_expiry_date
+      FROM hr_document_types WHERE is_active = 1 ORDER BY name`).all()
       .filter((type) => canAccessSensitiveDocument(identity, type.sensitivity));
     const employees = db.prepare(`SELECT id, employee_number, full_name FROM employees
       ORDER BY status = 'active' DESC, full_name`).all()
@@ -2920,6 +3001,8 @@ export function createTenantApplication(options = {}) {
       throw new HttpError(400, "La fecha de emisión es obligatoria para este tipo documental.");
     if (documentType?.requires_expiry_date && !expiryDate)
       throw new HttpError(400, "La fecha de vencimiento es obligatoria para este tipo documental.");
+    if (expiryDate && documentType && !documentType.allows_expiry_date)
+      throw new HttpError(400, "Este tipo documental no maneja fecha de vencimiento.");
     if (issueDate && expiryDate && expiryDate < issueDate)
       throw new HttpError(400, "La fecha de vencimiento no puede ser anterior a la emisión.");
     if (employeeId) assertEmployeeAccess(db, context.user.id, employeeId, HttpError);

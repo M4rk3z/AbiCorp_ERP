@@ -49,6 +49,7 @@ function bindBaseEvents() {
   $("#request-form").elements.isUnpaid.addEventListener("change", updateRequestPolicyOptions);
   $("#review-form").addEventListener("submit", submitTeamReview);
   $("#document-form").addEventListener("submit", submitDocument);
+  $("#portal-document-type").addEventListener("change", syncPortalDocumentRules);
   $("#cfdi-clarification-form").addEventListener("submit", submitCfdiClarification);
   $("#portal-body").addEventListener("click", portalBodyClick);
 }
@@ -320,7 +321,19 @@ function openTeamReview(id) {
 function setDefaultRequestDates() { const today = new Date().toISOString().slice(0,10); const form = $("#request-form"); form.elements.startDate.value = today; form.elements.endDate.value = today; }
 function fillCoverageOptions(selectedId = "") { const select = $("#request-coverage"); select.innerHTML = '<option value="">Sin asignar</option>' + (state.data.coverageOptions || []).map((row) => `<option value="${row.id}" ${Number(selectedId) === row.id ? "selected" : ""}>${escapeHtml(row.full_name)} · ${escapeHtml(row.position || row.employee_number)}</option>`).join(""); }
 function updateRequestPolicyOptions() { const form = $("#request-form"), permission = form.elements.leaveType.value === "permission"; $("#permission-unpaid-options").hidden = !permission; form.elements.isUnpaid.disabled = !permission; form.elements.unpaidTermsAccepted.disabled = !permission || !form.elements.isUnpaid.checked; form.elements.unpaidTermsAccepted.required = permission && form.elements.isUnpaid.checked; if (!permission) { form.elements.isUnpaid.checked = false; form.elements.unpaidTermsAccepted.checked = false; } }
-function fillDocumentTypes() { const types = state.data.documentTypes || []; $("#portal-document-type").innerHTML = types.map((row) => `<option value="${row.id}">${escapeHtml(row.name)}</option>`).join(""); }
+function fillDocumentTypes() {
+  const types = state.data.documentTypes || [];
+  $("#portal-document-type").innerHTML = types.map((row) => `<option value="${row.id}" data-expiry="${row.requires_expiry_date}" data-allows-expiry="${row.allows_expiry_date}">${escapeHtml(row.name)}</option>`).join("");
+  syncPortalDocumentRules();
+}
+function syncPortalDocumentRules() {
+  const form = $("#document-form"), option = $("#portal-document-type").selectedOptions[0];
+  const allowsExpiry = option?.dataset.allowsExpiry === "1";
+  $("#portal-document-expiry-field").hidden = !allowsExpiry;
+  form.elements.expiryDate.disabled = !allowsExpiry;
+  form.elements.expiryDate.required = allowsExpiry && option?.dataset.expiry === "1";
+  if (!allowsExpiry) form.elements.expiryDate.value = "";
+}
 function documentTypeForRequest(type) { const code = type === "incapacity" ? "MEDICAL" : "OTHER"; return state.data.documentTypes?.find((row) => row.code === code)?.id || state.data.documentTypes?.[0]?.id; }
 function infoCard(label, value) { return `<article class="info-card"><small>${label}</small><strong>${escapeHtml(value || "Sin registrar")}</strong></article>`; }
 function requestsTable(rows) { return rows.length ? `<table class="data-table"><thead><tr><th>Folio</th><th>Tipo</th><th>Periodo</th><th>Estado e historial</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td><strong>${escapeHtml(row.folio)}</strong><small class="table-note">${row.documents?.length || 0} adjunto(s) · ${row.history?.length || 0} movimiento(s)</small></td><td>${leaveLabel(row.leave_type)}${row.is_unpaid ? '<small class="table-note">Sin goce</small>' : ""}</td><td>${dateLabel(row.start_date)} — ${dateLabel(row.end_date)}<small class="table-note">${formatNumber(row.working_days || row.total_days)} día(s) hábil(es)</small></td><td><span class="badge ${row.review_action === "request_changes" ? "changes" : row.status}">${requestStatusLabel(row)}</span>${row.rejection_reason ? `<small class="table-note">${escapeHtml(row.rejection_reason)}</small>` : row.review_reason ? `<small class="table-note">${escapeHtml(row.review_reason)}</small>` : ""}${row.proposed_start_date ? `<small class="table-note">Propuesta: ${dateLabel(row.proposed_start_date)} — ${dateLabel(row.proposed_end_date)}</small>` : ""}</td><td>${row.review_action === "request_changes" ? `<button class="secondary compact" data-edit-request="${row.id}">Modificar</button>` : ""}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">Aún no hay solicitudes.</div>'; }

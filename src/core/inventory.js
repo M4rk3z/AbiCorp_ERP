@@ -331,12 +331,12 @@ export function updateSerial(db, id, body) {
 
 export function listCounts(db) {
   return db.prepare(`SELECT c.*, w.code AS warehouse_code, w.name AS warehouse_name,
-    usr.full_name AS created_by_name, COUNT(cl.id) AS line_count,
-    SUM(CASE WHEN cl.counted_quantity IS NOT NULL THEN 1 ELSE 0 END) AS counted_lines
+    usr.full_name AS created_by_name,
+    (SELECT COUNT(*) FROM inventory_count_lines cl WHERE cl.count_id = c.id) AS line_count,
+    (SELECT COUNT(*) FROM inventory_count_lines cl WHERE cl.count_id = c.id AND cl.counted_quantity IS NOT NULL) AS counted_lines
     FROM inventory_counts c JOIN warehouses w ON w.id = c.warehouse_id
     LEFT JOIN users usr ON usr.id = c.created_by
-    LEFT JOIN inventory_count_lines cl ON cl.count_id = c.id
-    GROUP BY c.id ORDER BY c.id DESC`).all();
+    ORDER BY c.id DESC`).all();
 }
 
 export function createCount(db, body, userId) {

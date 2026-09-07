@@ -5,7 +5,7 @@ export const POSTGRES_INITIAL_RESPONSE_BYTES = 256 * 1024;
 export const POSTGRES_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const RESPONSE_TOO_LARGE_CODE = "ABICORP_RESPONSE_TOO_LARGE";
 const HEADER_BYTES = 8;
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 240_000;
 const decoder = new TextDecoder();
 
 export class PostgresDatabaseSync {
@@ -156,6 +156,15 @@ export function isPostgresProvider(options = {}) {
   return /^postgres(?:ql)?:\/\//i.test(
     String(options.databaseUrl ?? process.env.DATABASE_URL ?? ""),
   );
+}
+
+export function isTransientPostgresConnectionError(error) {
+  const code = String(error?.code ?? "").toUpperCase();
+  if (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENETUNREACH", "EHOSTUNREACH",
+    "57P01", "57P02", "57P03"].includes(code) || code.startsWith("08")) return true;
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  return ["connection terminated unexpectedly", "connection terminated", "connection closed",
+    "client has already been closed", "client is not queryable", "socket hang up"].some((text) => message.includes(text));
 }
 
 function jsonReviver(_key, value) {

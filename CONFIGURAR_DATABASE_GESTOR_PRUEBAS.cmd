@@ -9,7 +9,7 @@ set "configExitCode=%errorlevel%"
 
 echo.
 if "%configExitCode%"=="0" (
-  echo Configuracion terminada. Ya puedes usar INICIAR_GESTOR_PRUEBAS.cmd.
+  echo Configuracion terminada. Ya puedes usar INICIAR_AMBIENTE_PRUEBAS.cmd.
 ) else (
   echo No fue posible guardar la configuracion de pruebas.
 )

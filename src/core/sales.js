@@ -137,12 +137,13 @@ export function listDocuments(db, type) {
   return db.prepare(`SELECT d.*, cur.code AS currency_code,
     COALESCE(c.trade_name, c.legal_name, p.company_name, p.contact_name) AS party_name,
     c.code AS customer_code, p.folio AS prospect_folio, src.folio AS source_folio,
-    u.full_name AS created_by_name, COUNT(l.id) AS line_count
+    u.full_name AS created_by_name,
+    (SELECT COUNT(*) FROM sales_document_lines l WHERE l.document_id = d.id) AS line_count
     FROM sales_documents d JOIN currencies cur ON cur.id = d.currency_id
     LEFT JOIN customers c ON c.id = d.customer_id LEFT JOIN sales_prospects p ON p.id = d.prospect_id
     LEFT JOIN sales_documents src ON src.id = d.source_document_id
-    LEFT JOIN users u ON u.id = d.created_by LEFT JOIN sales_document_lines l ON l.document_id = d.id
-    WHERE d.document_type = ? GROUP BY d.id ORDER BY d.id DESC`).all(type);
+    LEFT JOIN users u ON u.id = d.created_by
+    WHERE d.document_type = ? ORDER BY d.id DESC`).all(type);
 }
 
 export function getDocument(db, id) {

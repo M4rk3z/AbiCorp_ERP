@@ -42,6 +42,12 @@ test("los perfiles Colaborador, Auxiliar RH y Administrador RH respetan su alcan
   assert.deepEqual([...visibleEmployeeIds(db, hrAdmin)].sort(), [employees[0], employees[1]].sort());
   assert.deepEqual([...visibleEmployeeIds(db, hrAssistant)].sort(), [employees[0], employees[1]].sort());
 
+  const globalAuditor = createUser("global.auditor");
+  db.prepare(`INSERT INTO hr_user_access
+    (user_id, identity_type, access_scope, can_view_salary, can_view_medical)
+    VALUES (?, 'payroll', 'company', 0, 0)`).run(globalAuditor);
+  assert.deepEqual([...visibleEmployeeIds(db, globalAuditor)].sort(), [...employees].sort());
+
   const payload = {
     people: employees.map((id) => ({ id, status: "active", hire_date: "2026-01-01",
       base_salary: 25000, currency_code: "MXN", payment_method: "transfer", bank_reference: "private" })),

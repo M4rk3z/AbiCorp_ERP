@@ -6,7 +6,7 @@
     <meta name="description" content="Núcleo administrativo del ERP modular de Abicorp" />
     <title>Abicorp ERP</title>
     <link rel="icon" type="image/png" href="./assets/abicorp-logo.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260807-82" />
+    <link rel="stylesheet" href="./styles.css?v=20260901-06" />
   </head>
   <body>
     <div id="loading-screen" class="loading-screen" aria-live="polite">
@@ -55,9 +55,8 @@
           </div>
         </div>
         <footer class="story-footer">
-          <span>NÚCLEO DEL SISTEMA</span>
-          <span>Todos los derechos reservados M4rk3z Solutions</span>
-          <span>VERSIÓN 0.1</span>
+          <span>Derechos Reservados Fimma</span>
+          <span>VERSIÓN BETA 1.2</span>
         </footer>
       </section>
       <section class="login-panel">
@@ -70,7 +69,7 @@
             <span class="password-field"><input id="login-password" name="password" type="password" autocomplete="current-password" required /><button class="peek" type="button" data-peek="login-password" data-peek-label="contraseña" aria-label="Mostrar contraseña" aria-pressed="false">Ver</button></span>
           </label>
           <p id="login-error" class="form-error hidden" role="alert"></p>
-          <button class="button primary wide" type="submit"><span>Entrar al sistema</span><span aria-hidden="true">→</span></button>
+          <button class="button primary wide" type="submit"><span>Entrar</span><span aria-hidden="true">→</span></button>
           <div class="login-help"><span class="status-dot"></span>Base local protegida y disponible</div>
         </form>
       </section>
@@ -81,23 +80,15 @@
         <div class="sidebar-brand"><img class="brand-logo" src="./assets/abicorp-logo.png" alt="" /><div><strong>ABICORP</strong><span>ERP MODULAR</span></div></div>
         <nav id="main-nav" aria-label="Navegación principal">
           <button class="nav-item nav-direct active" data-view="dashboard" data-permission="dashboard.view"><span class="nav-icon">⌂</span>Dashboards</button>
-          <section class="nav-group" data-nav-group>
-            <button class="nav-group-toggle" type="button" aria-expanded="false"><span>NÚCLEO</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
-            <div class="nav-group-items">
-              <button class="nav-item" data-view="catalogs" data-permission="catalogs.view"><span class="nav-icon">▦</span>Catálogos generales</button>
-              <button class="nav-item" data-view="folios" data-permission="folios.view"><span class="nav-icon">№</span>Folios y consecutivos</button>
-              <button class="nav-item" data-view="documents" data-permission="documents.view"><span class="nav-icon">□</span>Archivos y documentos</button>
-              <button class="nav-item" data-view="notifications" data-permission="notifications.view"><span class="nav-icon">○</span>Notificaciones</button>
-              <button class="nav-item" data-view="audit" data-permission="audit.view"><span class="nav-icon">≡</span>Bitácora</button>
-            </div>
-          </section>
-          <button class="nav-item nav-direct" data-view="masters_hub" data-permission="masters.view"><span class="nav-icon">▦</span>Datos maestros</button>
-          <button class="nav-item nav-direct" data-view="inventory_stock" data-permission="inventory.view"><span class="nav-icon">▤</span>Almacén</button>
-          <button class="nav-item nav-direct" data-view="purchases_control" data-permission="purchases.view"><span class="nav-icon">↘</span>Compras</button>
           <button class="nav-item nav-direct" data-view="sales_control" data-permission="sales.view"><span class="nav-icon">↗</span>Ventas</button>
           <button class="nav-item nav-direct" data-view="production_control" data-permission="production.view"><span class="nav-icon">⚒</span>Producción</button>
+          <button class="nav-item nav-direct" data-view="inventory_stock" data-permission="inventory.view"><span class="nav-icon">▤</span>Almacén</button>
+          <button class="nav-item nav-direct" data-view="purchases_control" data-permission="purchases.view"><span class="nav-icon">↘</span>Compras</button>
           <button class="nav-item nav-direct" data-view="quality_control" data-permission="quality.view"><span class="nav-icon">✓</span>Calidad</button>
+          <button class="nav-item nav-direct" data-view="logistics_control" data-permission="logistics.view"><span class="nav-icon">⇢</span>Logística</button>
           <button class="nav-item nav-direct" data-view="maintenance_control" data-permission="maintenance.view"><span class="nav-icon">⚙</span>Mantenimiento</button>
+          <button class="nav-item nav-direct" data-view="finance_control" data-permission="finance.view"><span class="nav-icon">$</span>Finanzas</button>
+          <button class="nav-item nav-direct" data-view="tasks_assigned" data-permission="tasks.view"><span class="nav-icon">✓</span>Mis tareas</button>
           <button class="nav-item nav-direct" data-view="safety_control" data-permission="safety.view"><span class="nav-icon">✚</span>Seguridad y salud</button>
           <section class="nav-group nav-group-hr" data-nav-group>
             <button class="nav-group-toggle nav-module-toggle" type="button" aria-expanded="false"><span class="nav-module-label"><span class="nav-icon" aria-hidden="true">♙</span><span>Recursos humanos</span></span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
@@ -106,18 +97,15 @@
               <button class="nav-item" data-view="payroll_control" data-permission="payroll.view"><span class="nav-icon">N</span>Nómina y CFDI</button>
             </div>
           </section>
-          <button class="nav-item nav-direct" data-view="logistics_control" data-permission="logistics.view"><span class="nav-icon">⇢</span>Logística</button>
-          <button class="nav-item nav-direct" data-view="finance_control" data-permission="finance.view"><span class="nav-icon">$</span>Finanzas</button>
+          <button class="nav-item nav-direct" data-view="masters_hub" data-permission="masters.view"><span class="nav-icon">▦</span>Datos maestros</button>
           <section class="nav-group" data-nav-group>
-            <button class="nav-group-toggle" type="button" aria-expanded="false"><span>TAREAS Y APROBACIONES</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+            <button class="nav-group-toggle" type="button" aria-expanded="false"><span>NÚCLEO</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
             <div class="nav-group-items">
-              <button class="nav-item" data-view="tasks_assigned" data-permission="tasks.view"><span class="nav-icon">✓</span>Tareas asignadas</button>
-              <button class="nav-item" data-view="tasks_flows" data-permission="tasks.view"><span class="nav-icon">⇢</span>Flujos de aprobación</button>
-              <button class="nav-item" data-view="tasks_comments" data-permission="tasks.view"><span class="nav-icon">◌</span>Comentarios</button>
-              <button class="nav-item" data-view="tasks_rejections" data-permission="tasks.view"><span class="nav-icon">×</span>Rechazos</button>
-              <button class="nav-item" data-view="tasks_reassignments" data-permission="tasks.view"><span class="nav-icon">↝</span>Reasignaciones</button>
-              <button class="nav-item" data-view="tasks_deadlines" data-permission="tasks.view"><span class="nav-icon">⌚</span>Fechas límite</button>
-              <button class="nav-item" data-view="tasks_history" data-permission="tasks.view"><span class="nav-icon">≡</span>Historial de decisiones</button>
+              <button class="nav-item" data-view="catalogs" data-permission="catalogs.view"><span class="nav-icon">▦</span>Catálogos generales</button>
+              <button class="nav-item" data-view="folios" data-permission="folios.view"><span class="nav-icon">№</span>Folios y consecutivos</button>
+              <button class="nav-item" data-view="documents" data-permission="documents.view"><span class="nav-icon">□</span>Archivos y documentos</button>
+              <button class="nav-item" data-view="notifications" data-permission="notifications.view"><span class="nav-icon">○</span>Notificaciones</button>
+              <button class="nav-item" data-view="audit" data-permission="audit.view"><span class="nav-icon">≡</span>Bitácora</button>
             </div>
           </section>
           <button class="nav-item nav-direct" data-view="settings" data-permission="settings.view"><span class="nav-icon">⚙</span>Configuración</button>
@@ -167,6 +155,6 @@
     </dialog>
     <dialog id="action-dialog" class="modal action-dialog" aria-labelledby="action-dialog-title"></dialog>
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=20260807-82"></script>
+    <script type="module" src="./app.js?v=20260901-08"></script>
   </body>
 </html>

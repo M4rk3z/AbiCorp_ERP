@@ -12,8 +12,11 @@ $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 if ($nodeCommand) {
   $nodeExecutable = $nodeCommand.Source
 } else {
-  $userProfilePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-  $nodeExecutable = Join-Path $userProfilePath ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+  $profileCandidates = @($env:USERPROFILE, [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) |
+    Where-Object { $_ } | Select-Object -Unique
+  $nodeExecutable = $profileCandidates |
+    ForEach-Object { Join-Path $_ ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" } |
+    Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 
 if (-not (Test-Path -LiteralPath $nodeExecutable)) {
@@ -41,7 +44,7 @@ function Test-ErpHealth {
 if (Test-ErpHealth) {
   Write-Host "El ERP de pruebas ya esta funcionando en $erpUrl"
   if ($OpenBrowser) { Start-Process $erpUrl }
-  exit 0
+  return
 }
 
 $listener = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
@@ -54,7 +57,7 @@ if (Test-Path -LiteralPath $pidPath) {
   if ([int]::TryParse((Get-Content -LiteralPath $pidPath -Raw).Trim(), [ref]$savedPid)) {
     $staleProcess = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
     if ($staleProcess -and $staleProcess.ProcessName -eq "node") {
-      throw "Existe un proceso Node registrado para el ERP de pruebas, pero no responde en el puerto $Port. Ejecuta DETENER_ERP_PRUEBAS.cmd y vuelve a intentarlo."
+      throw "Existe un proceso Node registrado para el ERP de pruebas, pero no responde en el puerto $Port. Ejecuta DETENER_AMBIENTE_PRUEBAS.cmd y vuelve a intentarlo."
     }
   }
   Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
@@ -108,26 +111,39 @@ try {
   New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
   Set-Content -LiteralPath $outputLogPath -Value "" -Encoding utf8
   Set-Content -LiteralPath $errorLogPath -Value "" -Encoding utf8
-  $childProcess = Start-Process -WindowStyle Hidden -PassThru -FilePath $nodeExecutable `
-    -ArgumentList @($serverPath) -WorkingDirectory $projectRoot `
-    -RedirectStandardOutput $outputLogPath -RedirectStandardError $errorLogPath
-  Set-Content -LiteralPath $pidPath -Value ([string]$childProcess.Id) -Encoding ascii
-
   Write-Host "Iniciando ERP de pruebas en segundo plano..."
   Write-Host "La base gratuita de Render puede tardar varios minutos en despertar."
   $deadline = (Get-Date).AddMinutes(4)
   $ready = $false
+  $startupAttempt = 0
   while ((Get-Date) -lt $deadline) {
-    $childProcess.Refresh()
-    if ($childProcess.HasExited) {
-      $details = (Get-Content -LiteralPath $errorLogPath -Tail 16 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+    $startupAttempt += 1
+    Set-Content -LiteralPath $outputLogPath -Value "" -Encoding utf8
+    Set-Content -LiteralPath $errorLogPath -Value "" -Encoding utf8
+    $childProcess = Start-Process -WindowStyle Hidden -PassThru -FilePath $nodeExecutable `
+      -ArgumentList @($serverPath) -WorkingDirectory $projectRoot `
+      -RedirectStandardOutput $outputLogPath -RedirectStandardError $errorLogPath
+    Set-Content -LiteralPath $pidPath -Value ([string]$childProcess.Id) -Encoding ascii
+
+    while ((Get-Date) -lt $deadline) {
+      $childProcess.Refresh()
+      if ($childProcess.HasExited) { break }
+      if (Test-ErpHealth) {
+        $ready = $true
+        break
+      }
+      Start-Sleep -Milliseconds 750
+    }
+    if ($ready) { break }
+    if (-not $childProcess.HasExited) { break }
+
+    $details = (Get-Content -LiteralPath $errorLogPath -Tail 16 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+    $transientFailure = $details -match "(?i)connection terminated|ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|socket hang up|57P0[123]|08[0-9A-Z]{3}|tiempo agotado.*PostgreSQL"
+    if (-not $transientFailure -or $startupAttempt -ge 4) {
       throw "El ERP de pruebas se cerro durante el inicio. $details"
     }
-    if (Test-ErpHealth) {
-      $ready = $true
-      break
-    }
-    Start-Sleep -Milliseconds 750
+    Write-Warning "PostgreSQL interrumpio la conexion inicial. Reintentando ($startupAttempt de 4)..."
+    Start-Sleep -Seconds ([Math]::Min($startupAttempt * 2, 6))
   }
   if (-not $ready) {
     throw "El ERP de pruebas no estuvo disponible despues de 4 minutos. Revisa $errorLogPath"

@@ -267,7 +267,8 @@ export function overview(db, session) {
   }
   const unread = db.prepare("SELECT COUNT(*) AS value FROM hr_portal_notifications WHERE employee_id = ? AND is_read = 0").get(employeeId).value;
   const directs = db.prepare("SELECT COUNT(*) AS value FROM hr_employee_profiles WHERE manager_employee_id = ?").get(employeeId).value;
-  const documentTypes = db.prepare(`SELECT id, code, name, sensitivity, requires_issue_date, requires_expiry_date
+  const documentTypes = db.prepare(`SELECT id, code, name, sensitivity, requires_issue_date,
+    requires_expiry_date, allows_expiry_date
     FROM hr_document_types WHERE is_active = 1 AND sensitivity IN ('standard', 'fiscal', 'medical') ORDER BY name`).all()
     .filter((row) => row.sensitivity !== "medical" || session.can_view_medical);
   const coverageOptions = db.prepare(`SELECT e.id, e.employee_number, e.full_name, e.position

@@ -9,10 +9,10 @@ $pidPath = Join-Path $projectRoot "config-local\erp-server-test.pid"
 if (-not (Test-Path -LiteralPath $pidPath)) {
   $listener = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
   if ($listener.Count -gt 0) {
-    throw "Hay un proceso en el puerto $Port que no fue iniciado por INICIAR_ERP_PRUEBAS.cmd. No se detendra automaticamente."
+    throw "Hay un proceso en el puerto $Port que no fue iniciado por INICIAR_AMBIENTE_PRUEBAS.cmd. No se detendra automaticamente."
   }
   Write-Host "El ERP de pruebas ya esta detenido."
-  exit 0
+  return
 }
 
 $savedPid = 0
@@ -24,7 +24,7 @@ $process = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
 if (-not $process) {
   Remove-Item -LiteralPath $pidPath -Force
   Write-Host "El ERP de pruebas ya estaba detenido."
-  exit 0
+  return
 }
 if ($process.ProcessName -ne "node") {
   throw "El PID guardado ya no pertenece a Node.js. Se cancelo el apagado por seguridad."
@@ -41,7 +41,7 @@ if ($listeners.Count -eq 0) {
   if (-not $recentStartup) {
     Remove-Item -LiteralPath $pidPath -Force
     Write-Host "Se elimino un registro antiguo. No se detuvo ningun proceso."
-    exit 0
+    return
   }
 }
 

@@ -54,7 +54,7 @@ if ($Detached) {
   if (Test-ControlHealth) {
     Write-Host "El Centro de Gestion ya esta funcionando."
     if ($OpenBrowser) { Start-Process $controlUrl }
-    exit 0
+    return
   }
   $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
   if ($listener) {
@@ -133,26 +133,39 @@ try {
     Set-Content -LiteralPath $errorLogPath -Value "" -Encoding utf8
     $childProcess = $null
     try {
-      $childProcess = Start-Process -WindowStyle Hidden -PassThru -FilePath $nodeExecutable `
-        -ArgumentList @($controlServer) -WorkingDirectory $projectRoot `
-        -RedirectStandardOutput $outputLogPath -RedirectStandardError $errorLogPath
-      Set-Content -LiteralPath $pidPath -Value ([string]$childProcess.Id) -Encoding ascii
-
       Write-Host "Iniciando Centro de Gestion ($EnvironmentName) en segundo plano..."
       Write-Host "La primera conexion con PostgreSQL puede tardar varios minutos."
       $deadline = (Get-Date).AddMinutes(4)
       $ready = $false
+      $startupAttempt = 0
       while ((Get-Date) -lt $deadline) {
-        $childProcess.Refresh()
-        if ($childProcess.HasExited) {
-          $details = (Get-Content -LiteralPath $errorLogPath -Tail 12 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+        $startupAttempt += 1
+        Set-Content -LiteralPath $outputLogPath -Value "" -Encoding utf8
+        Set-Content -LiteralPath $errorLogPath -Value "" -Encoding utf8
+        $childProcess = Start-Process -WindowStyle Hidden -PassThru -FilePath $nodeExecutable `
+          -ArgumentList @($controlServer) -WorkingDirectory $projectRoot `
+          -RedirectStandardOutput $outputLogPath -RedirectStandardError $errorLogPath
+        Set-Content -LiteralPath $pidPath -Value ([string]$childProcess.Id) -Encoding ascii
+
+        while ((Get-Date) -lt $deadline) {
+          $childProcess.Refresh()
+          if ($childProcess.HasExited) { break }
+          if (Test-ControlHealth) {
+            $ready = $true
+            break
+          }
+          Start-Sleep -Milliseconds 750
+        }
+        if ($ready) { break }
+        if (-not $childProcess.HasExited) { break }
+
+        $details = (Get-Content -LiteralPath $errorLogPath -Tail 16 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+        $transientFailure = $details -match "(?i)connection terminated|ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|socket hang up|57P0[123]|08[0-9A-Z]{3}|tiempo agotado.*PostgreSQL"
+        if (-not $transientFailure -or $startupAttempt -ge 4) {
           throw "El Centro de Gestion se cerro durante el inicio. $details"
         }
-        if (Test-ControlHealth) {
-          $ready = $true
-          break
-        }
-        Start-Sleep -Milliseconds 750
+        Write-Warning "PostgreSQL interrumpio la conexion inicial. Reintentando ($startupAttempt de 4)..."
+        Start-Sleep -Seconds ([Math]::Min($startupAttempt * 2, 6))
       }
       if (-not $ready) {
         throw "El Centro de Gestion no estuvo disponible despues de 4 minutos. Revisa $errorLogPath"
@@ -162,7 +175,7 @@ try {
       if ($OpenBrowser) {
         try { Start-Process $controlUrl } catch { Write-Warning "Abre manualmente $controlUrl" }
       }
-      exit 0
+      return
     } catch {
       if ($childProcess -and -not $childProcess.HasExited) {
         Stop-Process -Id $childProcess.Id -Force -ErrorAction SilentlyContinue

@@ -2380,6 +2380,96 @@ export const migrations = [
       "CREATE INDEX IF NOT EXISTS idx_payroll_preparation_employee ON payroll_preparation_lines(employee_id, preparation_id)",
     ],
   },
+  {
+    version: 38,
+    name: "hr_confidential_compliance_cases",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS hr_grievance_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        folio TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        category TEXT NOT NULL CHECK (category IN ('harassment', 'discrimination', 'retaliation', 'labor', 'safety', 'ethics', 'other')),
+        channel TEXT NOT NULL DEFAULT 'internal' CHECK (channel IN ('internal', 'portal', 'email', 'phone', 'in_person', 'other')),
+        reporter_type TEXT NOT NULL DEFAULT 'anonymous' CHECK (reporter_type IN ('anonymous', 'employee', 'third_party')),
+        reporter_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+        reporter_contact TEXT NOT NULL DEFAULT '',
+        occurred_on TEXT,
+        location TEXT NOT NULL DEFAULT '',
+        subject_names TEXT NOT NULL DEFAULT '',
+        severity TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+        confidentiality TEXT NOT NULL DEFAULT 'strict' CHECK (confidentiality IN ('restricted', 'strict')),
+        status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received', 'triage', 'investigating', 'action_plan', 'resolved', 'closed', 'dismissed')),
+        investigator_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        target_date TEXT,
+        resolution TEXT NOT NULL DEFAULT '',
+        anti_retaliation_notice INTEGER NOT NULL DEFAULT 1 CHECK (anti_retaliation_notice IN (0, 1)),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT,
+        closed_at TEXT
+      )`,
+      `CREATE TABLE IF NOT EXISTS hr_grievance_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER NOT NULL REFERENCES hr_grievance_cases(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        previous_status TEXT,
+        next_status TEXT NOT NULL,
+        comment TEXT NOT NULL DEFAULT '',
+        actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS hr_grievance_evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER NOT NULL REFERENCES hr_grievance_cases(id) ON DELETE CASCADE,
+        evidence_type TEXT NOT NULL DEFAULT 'note' CHECK (evidence_type IN ('note', 'document', 'email', 'photo', 'link', 'other')),
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+        external_reference TEXT NOT NULL DEFAULT '',
+        checksum TEXT NOT NULL DEFAULT '',
+        sensitivity TEXT NOT NULL DEFAULT 'strict' CHECK (sensitivity IN ('restricted', 'strict')),
+        retention_until TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+      "CREATE INDEX IF NOT EXISTS idx_hr_grievance_status ON hr_grievance_cases(status, severity, created_at DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_hr_grievance_investigator ON hr_grievance_cases(investigator_user_id, status)",
+      "CREATE INDEX IF NOT EXISTS idx_hr_grievance_history_case ON hr_grievance_history(case_id, created_at DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_hr_grievance_evidence_case ON hr_grievance_evidence(case_id, created_at DESC)",
+    ],
+  },
+  {
+    version: 39,
+    name: "demo_administrator_hr_identity",
+    statements: [
+      `UPDATE hr_user_access SET identity_type = 'manager', access_scope = 'company',
+         can_view_salary = 1, can_view_cfdi = 1, can_view_medical = 1,
+         access_status = 'active', updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = (SELECT id FROM users WHERE username = 'demo.admin')
+         AND EXISTS (SELECT 1 FROM app_settings WHERE key = 'demo_company_seed_version')`,
+    ],
+  },
+  {
+    version: 40,
+    name: "job_position_descriptions_and_profiles",
+    statements: [
+      "ALTER TABLE hr_job_positions ADD COLUMN profile_education TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE hr_job_positions ADD COLUMN profile_experience TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE hr_job_positions ADD COLUMN profile_knowledge TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE hr_job_positions ADD COLUMN profile_skills TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE hr_job_positions ADD COLUMN profile_competencies TEXT NOT NULL DEFAULT ''",
+    ],
+  },
+  {
+    version: 41,
+    name: "document_expiry_capabilities",
+    statements: [
+      "ALTER TABLE hr_document_types ADD COLUMN allows_expiry_date INTEGER NOT NULL DEFAULT 0 CHECK (allows_expiry_date IN (0, 1))",
+      "UPDATE hr_document_types SET allows_expiry_date = 1 WHERE code IN ('OFFICIAL_ID', 'MEDICAL', 'OTHER')",
+    ],
+  },
 ];
 
 export const baseRoles = [
@@ -2458,6 +2548,10 @@ export const basePermissions = [
   ["hr.manage", "hr", "manage", "Registrar y actualizar expedientes de personal"],
   ["hr.operate", "hr", "operate", "Registrar permisos, vacaciones, incapacidades y asistencia"],
   ["hr.approve", "hr", "approve", "Aprobar o rechazar solicitudes de personal"],
+  ["hr.compliance.view", "hr", "view", "Consultar el centro de cumplimiento de Recursos Humanos"],
+  ["hr.compliance.manage", "hr", "manage", "Registrar casos y evidencias de cumplimiento"],
+  ["hr.grievances.investigate", "hr", "operate", "Investigar casos confidenciales y documentar planes de acción"],
+  ["hr.grievances.resolve", "hr", "approve", "Resolver, cerrar o reabrir casos confidenciales"],
   ["audit.view", "audit", "view", "Consultar la bitácora"],
   ["settings.view", "settings", "view", "Consultar configuración"],
   ["settings.manage", "settings", "manage", "Modificar configuración"],

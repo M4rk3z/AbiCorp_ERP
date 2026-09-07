@@ -31,6 +31,8 @@ function laborCatalogOptions(db) {
   const rows = db.prepare(`
     SELECT 'area' AS catalog_type, CAST(id AS TEXT) AS id, CAST(code AS TEXT) AS code,
       CAST(name AS TEXT) AS name, CAST(description AS TEXT) AS description,
+      NULL AS profile_education, NULL AS profile_experience, NULL AS profile_knowledge,
+      NULL AS profile_skills, NULL AS profile_competencies,
       CAST(is_active AS TEXT) AS is_active,
       NULL AS company_id, NULL AS work_center_id, NULL AS trade_name, NULL AS center_type,
       NULL AS start_time, NULL AS end_time, NULL AS work_days, NULL AS break_minutes,
@@ -40,29 +42,35 @@ function laborCatalogOptions(db) {
     FROM areas
     UNION ALL
     SELECT 'company', CAST(id AS TEXT), CAST(code AS TEXT), CAST(legal_name AS TEXT), NULL,
+      NULL, NULL, NULL, NULL, NULL,
       CAST(is_active AS TEXT), NULL, NULL, CAST(trade_name AS TEXT), NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, NULL, NULL, CAST(created_at AS TEXT), CAST(updated_at AS TEXT)
     FROM companies WHERE is_active = 1
     UNION ALL
     SELECT 'work_center', CAST(id AS TEXT), CAST(code AS TEXT), CAST(name AS TEXT), NULL,
+      NULL, NULL, NULL, NULL, NULL,
       CAST(is_active AS TEXT), CAST(company_id AS TEXT), NULL, NULL, CAST(center_type AS TEXT),
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       CAST(created_at AS TEXT), CAST(updated_at AS TEXT)
     FROM hr_work_centers WHERE is_active = 1
     UNION ALL
     SELECT 'department', CAST(id AS TEXT), CAST(code AS TEXT), CAST(name AS TEXT), NULL,
+      NULL, NULL, NULL, NULL, NULL,
       CAST(is_active AS TEXT), CAST(company_id AS TEXT), CAST(work_center_id AS TEXT),
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       CAST(created_at AS TEXT), CAST(updated_at AS TEXT)
     FROM hr_departments WHERE is_active = 1
     UNION ALL
     SELECT 'position', CAST(id AS TEXT), CAST(code AS TEXT), CAST(name AS TEXT),
-      CAST(description AS TEXT), CAST(is_active AS TEXT),
+      CAST(description AS TEXT), CAST(profile_education AS TEXT), CAST(profile_experience AS TEXT),
+      CAST(profile_knowledge AS TEXT), CAST(profile_skills AS TEXT), CAST(profile_competencies AS TEXT),
+      CAST(is_active AS TEXT),
       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       CAST(created_at AS TEXT), CAST(updated_at AS TEXT)
     FROM hr_job_positions WHERE is_active = 1
     UNION ALL
     SELECT 'shift', CAST(id AS TEXT), CAST(code AS TEXT), CAST(name AS TEXT), NULL,
+      NULL, NULL, NULL, NULL, NULL,
       CAST(is_active AS TEXT), NULL, NULL, NULL, NULL, CAST(start_time AS TEXT),
       CAST(end_time AS TEXT), CAST(work_days AS TEXT), CAST(break_minutes AS TEXT),
       CAST(schedule_json AS TEXT), NULL, NULL, NULL,
@@ -70,7 +78,8 @@ function laborCatalogOptions(db) {
     FROM hr_work_shifts WHERE is_active = 1
     UNION ALL
     SELECT 'vacation_plan', CAST(id AS TEXT), CAST(code AS TEXT), CAST(name AS TEXT),
-      CAST(description AS TEXT), CAST(is_active AS TEXT), NULL, NULL, NULL, NULL,
+      CAST(description AS TEXT), NULL, NULL, NULL, NULL, NULL,
+      CAST(is_active AS TEXT), NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, NULL, CAST(annual_days AS TEXT),
       CAST(min_service_years AS TEXT), CAST(max_service_years AS TEXT),
       CAST(created_at AS TEXT), CAST(updated_at AS TEXT)
@@ -96,7 +105,9 @@ function laborCatalogOptions(db) {
     departments: ofType("department").map((row) => pick(row,
       ["id", "company_id", "work_center_id", "code", "name"])),
     jobPositions: ofType("position").map((row) => pick(row,
-      ["id", "code", "name", "description", "is_active", "created_at", "updated_at"])),
+      ["id", "code", "name", "description", "profile_education", "profile_experience",
+        "profile_knowledge", "profile_skills", "profile_competencies",
+        "is_active", "created_at", "updated_at"])),
     workShifts: ofType("shift").map((row) => pick(row,
       ["id", "code", "name", "start_time", "end_time", "work_days", "break_minutes",
         "schedule_json", "is_active", "created_at", "updated_at"])),
@@ -361,9 +372,13 @@ export function personAction(db, id, body, userId = null) {
 
 export function createJobPosition(db, body) {
   const name = requiredText(body.name, 120, "El nombre del puesto");
+  const profile = jobPositionProfile(body);
   try {
-    const result = db.prepare("INSERT INTO hr_job_positions (code, name, description) VALUES (?, ?, ?)")
-      .run(placeholder("PUE"), name, text(body.description, 500));
+    const result = db.prepare(`INSERT INTO hr_job_positions
+      (code, name, description, profile_education, profile_experience, profile_knowledge,
+       profile_skills, profile_competencies)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(placeholder("PUE"), name, text(body.description, 4000), ...profile);
     const id = Number(result.lastInsertRowid), folio = `PUE-${String(id).padStart(5, "0")}`;
     db.prepare("UPDATE hr_job_positions SET code = ? WHERE id = ?").run(folio, id);
     return { id, folio, name };
@@ -374,17 +389,35 @@ export function createJobPosition(db, body) {
 
 export function updateJobPosition(db, id, body) {
   const recordId = positiveId(id, "puesto");
-  const current = db.prepare("SELECT id, code FROM hr_job_positions WHERE id = ? AND is_active = 1").get(recordId);
+  const current = db.prepare(`SELECT id, code, description, profile_education, profile_experience,
+    profile_knowledge, profile_skills, profile_competencies
+    FROM hr_job_positions WHERE id = ? AND is_active = 1`).get(recordId);
   if (!current) throw new HrError(404, "Puesto no encontrado.");
   const name = requiredText(body.name, 120, "El nombre del puesto");
+  const profile = jobPositionProfile(body, current);
   try {
     db.prepare(`UPDATE hr_job_positions SET name = ?, description = ?,
+      profile_education = ?, profile_experience = ?, profile_knowledge = ?,
+      profile_skills = ?, profile_competencies = ?,
       updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(name, text(body.description, 500), recordId);
+      .run(name, Object.hasOwn(body, "description") ? text(body.description, 4000) : current.description,
+        ...profile, recordId);
     return { id: recordId, folio: current.code, name };
   } catch (error) {
     constraint(error, "Ya existe un puesto con ese nombre.");
   }
+}
+
+function jobPositionProfile(body, current = {}) {
+  return [
+    ["profileEducation", "profile_education"],
+    ["profileExperience", "profile_experience"],
+    ["profileKnowledge", "profile_knowledge"],
+    ["profileSkills", "profile_skills"],
+    ["profileCompetencies", "profile_competencies"],
+  ].map(([input, stored]) => Object.hasOwn(body, input)
+    ? text(body[input], 2000)
+    : text(current[stored], 2000));
 }
 
 export function organizationStructure(db, managedCompanyId = null) {
