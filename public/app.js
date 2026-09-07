@@ -699,15 +699,23 @@ async function renderDashboard() {
   const catalog = availableDashboardShortcuts();
   const selected = selectedIds.map((id) => catalog.find((shortcut) => shortcut.id === id)).filter(Boolean);
   const tasksEnabled = hasPermission("tasks.view");
+  const approvalsEnabled = hasPermission("hr.approve") && hasPermission("notifications.view");
+  const workEnabled = tasksEnabled || approvalsEnabled;
   pageContent.innerHTML = '<section class="dashboard-welcome"><div><span class="eyebrow">TU ESPACIO DE TRABAJO</span><h2>Buenos días, ' + escapeHtml(firstName(state.user.fullName)) + '.</h2><p>Lo importante para hoy, sin recorrer todo el sistema.</p></div></section>' +
     '<div class="dashboard-focus-grid">' +
-      (tasksEnabled ? dashboardTasksWidget(null, true) : '') +
+      (workEnabled ? dashboardTasksWidget(null, true, false, [], tasksEnabled) : '') +
       '<section class="dashboard-shortcuts-panel"><div class="dashboard-shortcuts-head"><div><span class="eyebrow">ACCESOS FRECUENTES</span><h3>Atajos</h3></div><div class="dashboard-shortcuts-actions"><span>' + selected.length + '</span><button class="button ghost small" type="button" id="add-dashboard-shortcut">Personalizar</button></div></div>' +
       (selected.length ? '<div class="dashboard-shortcut-grid">' + selected.map(dashboardShortcutCard).join("") + '</div>' : '<div class="dashboard-shortcut-empty"><strong>Sin atajos</strong><p>Agrega sólo los accesos que utilizas con frecuencia.</p><button class="button ghost small" type="button" data-empty-add-shortcut>Personalizar</button></div>') + '</section>' +
     '</div>';
   pageContent.onclick = (event) => {
     if (event.target.closest("#add-dashboard-shortcut") || event.target.closest("[data-empty-add-shortcut]")) return openDashboardShortcutModal();
     if (event.target.closest("[data-dashboard-tasks-open]")) return navigate("tasks_assigned");
+    const approval = event.target.closest("[data-dashboard-approval]");
+    if (approval) {
+      state.hrApprovalFocusId = Number(approval.dataset.dashboardApproval);
+      return navigate("hr_control");
+    }
+    if (event.target.closest("[data-dashboard-approvals-open]")) return navigate("hr_control");
     const task = event.target.closest("[data-dashboard-task]");
     if (task) return openTaskDetail(Number(task.dataset.dashboardTask));
     const remove = event.target.closest("[data-remove-dashboard-shortcut]");
@@ -722,30 +730,35 @@ async function renderDashboard() {
     if (shortcut.section) state.settingsSection = shortcut.section;
     navigate(shortcut.view);
   };
-  if (!tasksEnabled) return;
-  try {
-    const control = await api("/api/tasks/control", { cacheTtlMs: 15000 });
-    if (!renderIsCurrent(token)) return;
-    const placeholder = $("[data-dashboard-tasks]", pageContent);
-    if (placeholder) placeholder.outerHTML = dashboardTasksWidget(control);
-  } catch {
-    if (!renderIsCurrent(token)) return;
-    const placeholder = $("[data-dashboard-tasks]", pageContent);
-    if (placeholder) placeholder.outerHTML = dashboardTasksWidget(null, false, true);
-  }
+  if (!workEnabled) return;
+  const [tasksResult, notificationsResult] = await Promise.all([
+    tasksEnabled ? api("/api/tasks/control", { cacheTtlMs: 15000 }).catch(() => null) : Promise.resolve(null),
+    approvalsEnabled ? api("/api/notifications", { cache: false }).catch(() => null) : Promise.resolve(null),
+  ]);
+  if (!renderIsCurrent(token)) return;
+  const placeholder = $("[data-dashboard-tasks]", pageContent);
+  const failed = !tasksResult && !notificationsResult;
+  if (placeholder) placeholder.outerHTML = dashboardTasksWidget(tasksResult, false, failed, notificationsResult?.actionItems || [], tasksEnabled);
+  if (notificationsResult) $("#notification-count").textContent = notificationsResult.notifications.filter((item) => !item.is_read).length + notificationsResult.actionItems.length;
 }
 
-function dashboardTasksWidget(control, loading = false, failed = false) {
+function dashboardTasksWidget(control, loading = false, failed = false, actionItems = [], tasksEnabled = true) {
   const openStatuses = new Set(["pending", "in_progress", "submitted"]);
   const tasks = (control?.assigned || []).filter((task) => openStatuses.has(task.status));
+  const approvals = actionItems.filter((item) => item.entityType === "hr_leave_request");
   const overdue = tasks.filter((task) => task.due_date && Number(task.days_remaining) < 0).length;
-  const rows = tasks.slice(0, 4).map((task) => '<button type="button" class="dashboard-task-row" data-dashboard-task="' + task.id + '"><span class="dashboard-task-priority ' + escapeAttribute(task.priority) + '"></span><span><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(taskModuleLabels[task.module] || task.module) + ' · ' + (task.due_date ? formatDateOnly(task.due_date) : "Sin fecha límite") + '</small></span>' + taskStatusBadge(task.status) + '</button>').join("");
+  const approvalRows = approvals.slice(0, 4).map((item) => '<button type="button" class="dashboard-task-row approval" data-dashboard-approval="' + item.entityId + '"><span class="dashboard-task-priority high"></span><span><strong>' + escapeHtml(item.title) + '</strong><small>Recursos Humanos · ' + escapeHtml(item.message) + '</small></span><span class="badge warn">● Por aprobar</span></button>');
+  const taskRows = tasks.slice(0, Math.max(0, 4 - approvalRows.length)).map((task) => '<button type="button" class="dashboard-task-row" data-dashboard-task="' + task.id + '"><span class="dashboard-task-priority ' + escapeAttribute(task.priority) + '"></span><span><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(taskModuleLabels[task.module] || task.module) + ' · ' + (task.due_date ? formatDateOnly(task.due_date) : "Sin fecha límite") + '</small></span>' + taskStatusBadge(task.status) + '</button>');
+  const rows = [...approvalRows, ...taskRows].join("");
   const body = loading
     ? '<div class="dashboard-tasks-state"><span class="compact-loader"></span><small>Consultando pendientes…</small></div>'
     : failed
       ? '<div class="dashboard-tasks-state"><strong>No fue posible consultar las tareas</strong><small>Los demás accesos siguen disponibles.</small></div>'
       : rows || '<div class="dashboard-tasks-state"><strong>Todo al día</strong><small>No tienes tareas pendientes.</small></div>';
-  return '<section class="dashboard-tasks-card" data-dashboard-tasks><div class="dashboard-tasks-head"><div><span class="eyebrow">MI BANDEJA</span><h3>Mis tareas</h3></div><div class="dashboard-task-counts"><span><strong>' + tasks.length + '</strong> pendientes</span><span class="' + (overdue ? 'overdue' : '') + '"><strong>' + overdue + '</strong> vencidas</span></div></div><div class="dashboard-task-list">' + body + '</div><button class="dashboard-tasks-open" type="button" data-dashboard-tasks-open>Ver bandeja completa <span>→</span></button></section>';
+  const total = tasks.length + approvals.length;
+  const footers = (approvals.length ? '<button class="dashboard-tasks-open" type="button" data-dashboard-approvals-open>Revisar solicitudes <span>→</span></button>' : '')
+    + (tasksEnabled ? '<button class="dashboard-tasks-open" type="button" data-dashboard-tasks-open>Ver mis tareas <span>→</span></button>' : '');
+  return '<section class="dashboard-tasks-card" data-dashboard-tasks><div class="dashboard-tasks-head"><div><span class="eyebrow">MI BANDEJA</span><h3>Mis tareas</h3></div><div class="dashboard-task-counts"><span><strong>' + total + '</strong> pendientes</span><span class="' + (overdue ? 'overdue' : '') + '"><strong>' + overdue + '</strong> vencidas</span></div></div><div class="dashboard-task-list">' + body + '</div><div class="dashboard-tasks-actions">' + footers + '</div></section>';
 }
 
 function openDashboardShortcutModal() {
@@ -3752,11 +3765,19 @@ async function renderNotifications() {
   const [result, usersResult] = await Promise.all(requests);
   if (!renderIsCurrent(token)) return;
   if (usersResult) state.users = usersResult.users;
-  const unread = result.notifications.filter((item) => !item.is_read).length;
+  const actionItems = result.actionItems || [];
+  const unread = result.notifications.filter((item) => !item.is_read).length + actionItems.length;
   $("#notification-count").textContent = unread;
-  pageContent.innerHTML = `<section class="page-lead"><div><span class="eyebrow">CENTRO DE AVISOS</span><h2>Notificaciones</h2><p>Mensajes internos, alertas y avisos dirigidos a cada usuario.</p></div>${hasPermission("notifications.manage") ? '<button id="new-notification" class="button primary">＋ Enviar notificación</button>' : ""}</section><section class="notification-list">${result.notifications.length ? result.notifications.map((item) => `<article class="notification-card ${item.is_read ? "read" : ""}" data-notification-id="${item.id}"><span class="notification-type ${item.type}">${notificationSymbol(item.type)}</span><div><div class="notification-heading"><h3>${escapeHtml(item.title)}</h3><time>${formatDate(item.created_at)}</time></div><p>${escapeHtml(item.message)}</p></div>${item.is_read ? '<span class="read-label">LEÍDA</span>' : `<button class="link-button" data-read-notification="${item.id}">Marcar leída</button>`}</article>`).join("") : emptyMarkup("No tienes notificaciones", "Los avisos dirigidos a tu cuenta aparecerán aquí.")}</section>`;
+  const actionRows = actionItems.map((item) => `<article class="notification-card action"><span class="notification-type ${item.type}">${notificationSymbol(item.type)}</span><div><div class="notification-heading"><h3>${escapeHtml(item.title)}</h3><time>${formatDate(item.created_at)}</time></div><p>${escapeHtml(item.message)}</p></div><button class="button primary small" type="button" data-notification-action-view="${escapeAttribute(item.targetView)}" data-notification-action-id="${item.entityId}">Revisar</button></article>`).join("");
+  const notificationRows = result.notifications.map((item) => `<article class="notification-card ${item.is_read ? "read" : ""}" data-notification-id="${item.id}"><span class="notification-type ${item.type}">${notificationSymbol(item.type)}</span><div><div class="notification-heading"><h3>${escapeHtml(item.title)}</h3><time>${formatDate(item.created_at)}</time></div><p>${escapeHtml(item.message)}</p></div>${item.is_read ? '<span class="read-label">LEÍDA</span>' : `<button class="link-button" data-read-notification="${item.id}">Marcar leída</button>`}</article>`).join("");
+  pageContent.innerHTML = `<section class="page-lead"><div><span class="eyebrow">CENTRO DE AVISOS</span><h2>Notificaciones</h2><p>Mensajes internos, alertas y decisiones que requieren tu atención.</p></div>${hasPermission("notifications.manage") ? '<button id="new-notification" class="button primary">＋ Enviar notificación</button>' : ""}</section><section class="notification-list">${actionRows + notificationRows || emptyMarkup("No tienes notificaciones", "Los avisos dirigidos a tu cuenta aparecerán aquí.")}</section>`;
   $("#new-notification")?.addEventListener("click", openNotificationModal);
   pageContent.onclick = async (event) => {
+    const action = event.target.closest("[data-notification-action-view]");
+    if (action) {
+      if (action.dataset.notificationActionView === "hr_control") state.hrApprovalFocusId = Number(action.dataset.notificationActionId);
+      return navigate(action.dataset.notificationActionView);
+    }
     const button = event.target.closest("[data-read-notification]");
     if (!button) return;
     try { await api(`/api/notifications/${button.dataset.readNotification}/read`, { method: "PATCH" }); if (state.currentView === "notifications") await renderNotifications(); }
@@ -3903,7 +3924,7 @@ async function renderSettings() {
 async function loadNotifications() {
   try {
     const result = await api("/api/notifications", { cache: false });
-    $("#notification-count").textContent = result.notifications.filter((item) => !item.is_read).length;
+    $("#notification-count").textContent = result.notifications.filter((item) => !item.is_read).length + (result.actionItems || []).length;
   } catch {}
 }
 
@@ -4317,8 +4338,8 @@ let hrUiModulePromise = null;
 
 async function loadHrUiModule() {
   if (!hrUiModulePromise) {
-    hrUiModulePromise = import("./modules/hr.js?v=20260901-05")
-      .then(({ createHrModule }) => createHrModule({ $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials }))
+    hrUiModulePromise = import("./modules/hr.js?v=20260907-01")
+      .then(({ createHrModule }) => createHrModule({ $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials, loadNotifications }))
       .catch((error) => { hrUiModulePromise = null; throw error; });
   }
   return hrUiModulePromise;

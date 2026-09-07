@@ -30,8 +30,8 @@ test("la aplicacion operativa usa un sistema consistente de esquinas redondeadas
   assert.match(stylesSource, /\.master-command,[^]*border-radius: var\(--radius-panel\)/);
   assert.match(stylesSource, /\.organization-structure-scene article,[^]*border-radius: var\(--radius-card\)/);
   assert.match(stylesSource, /\.page-content :where\(/);
-  assert.match(html, /styles\.css\?v=20260907-01/);
-  assert.match(html, /app\.js\?v=20260907-01/);
+  assert.match(html, /styles\.css\?v=20260907-02/);
+  assert.match(html, /app\.js\?v=20260907-02/);
 });
 
 test("la portada usa la marca y presenta los módulos en un carrusel", () => {
@@ -99,6 +99,10 @@ test("dashboards permite personalizar atajos y mueve la supervisión a configura
   assert.match(source, /dashboard-shortcuts-actions[^]*add-dashboard-shortcut/);
   assert.match(source, /function dashboardTasksWidget/);
   assert.match(source, /data-dashboard-tasks-open/);
+  assert.match(source, /data-dashboard-approvals-open/);
+  assert.match(source, /hrApprovalFocusId/);
+  assert.match(source, /notificationsResult\?\.actionItems/);
+  assert.match(source, /Recursos Humanos ·/);
   assert.match(source, /ACCESOS FRECUENTES/);
   assert.doesNotMatch(source, /id: "tasks", label: "Mis tareas"/);
   assert.match(source, /settingsSection: "general"/);
@@ -311,6 +315,12 @@ test("seguridad y recursos humanos comparten incapacidades y control operativo",
   assert.match(hrReceiptStyles, /\.receipt-header/);
   assert.match(hrReceiptStyles, /@media print/);
   assert.match(source, /data-hr-print/);
+  assert.match(hrSource, /row\.status === "submitted" && hasPermission\("hr\.approve"\)/);
+  assert.match(hrSource, /data-hr-action="approve" data-hr-step=/);
+  assert.match(hrSource, /data-hr-action="reject" data-hr-step=/);
+  assert.match(hrSource, /Aprobar directamente/);
+  assert.match(hrSource, /data-hr-request-row=/);
+  assert.match(hrSource, /scrollIntoView/);
   assert.match(source, /Accidente en trayecto/);
   assert.match(source, /<select name="subtype" required>/);
   assert.doesNotMatch(source, /hr-selected-employee-avatar/);
@@ -570,7 +580,7 @@ test("la interfaz reutiliza respuestas recientes y RH carga control y catálogos
   assert.match(source, /const control = await api\("\/api\/hr\/control", \{ cacheTtlMs: HR_CONTROL_CACHE_MS \}\)/);
   assert.match(source, /const options = control\.options \|\| await api\("\/api\/hr\/options"\)/);
   assert.match(source, /api\("\/api\/notifications", \{ cache: false \}\)/);
-  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260901-05"\)/);
+  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260907-01"\)/);
   assert.match(hrSource, /export function createHrModule/);
   assert.match(hrSource, /import\("\.\/hr-compliance\.js\?v=20260821-01"\)/);
   assert.doesNotMatch(appSource, /\bformatDateTime\b/);
