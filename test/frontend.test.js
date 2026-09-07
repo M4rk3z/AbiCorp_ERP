@@ -30,8 +30,8 @@ test("la aplicacion operativa usa un sistema consistente de esquinas redondeadas
   assert.match(stylesSource, /\.master-command,[^]*border-radius: var\(--radius-panel\)/);
   assert.match(stylesSource, /\.organization-structure-scene article,[^]*border-radius: var\(--radius-card\)/);
   assert.match(stylesSource, /\.page-content :where\(/);
-  assert.match(html, /styles\.css\?v=20260901-06/);
-  assert.match(html, /app\.js\?v=20260901-08/);
+  assert.match(html, /styles\.css\?v=20260907-01/);
+  assert.match(html, /app\.js\?v=20260907-01/);
 });
 
 test("la portada usa la marca y presenta los módulos en un carrusel", () => {
@@ -97,6 +97,10 @@ test("dashboards permite personalizar atajos y mueve la supervisión a configura
   assert.match(source, /openDashboardShortcutModal/);
   assert.match(source, /data-remove-dashboard-shortcut/);
   assert.match(source, /dashboard-shortcuts-actions[^]*add-dashboard-shortcut/);
+  assert.match(source, /function dashboardTasksWidget/);
+  assert.match(source, /data-dashboard-tasks-open/);
+  assert.match(source, /ACCESOS FRECUENTES/);
+  assert.doesNotMatch(source, /id: "tasks", label: "Mis tareas"/);
   assert.match(source, /settingsSection: "general"/);
   assert.match(source, /data-settings-section="supervision"/);
   assert.match(source, /Supervisión del sistema/);
@@ -494,7 +498,7 @@ test("el menu prioriza el flujo de valor antes de las funciones administrativas"
   const orderedViews = [
     "dashboard", "sales_control", "production_control", "inventory_stock", "purchases_control",
     "quality_control", "logistics_control", "maintenance_control", "finance_control",
-    "tasks_assigned", "safety_control", "hr_control", "masters_hub", "catalogs", "settings",
+    "safety_control", "hr_control", "masters_hub", "catalogs", "settings",
   ];
   const positions = orderedViews.map((view) => html.indexOf(`data-view="${view}"`));
   assert.ok(positions.every((position) => position >= 0));
@@ -717,9 +721,10 @@ test("configuración muestra la identidad del Gestor sin permitir editarla", () 
   assert.doesNotMatch(appSource, /name="company_name"/);
 });
 
-test("las tareas se integran en cada area sin saturar el menu lateral", () => {
-  assert.equal(html.includes('data-view="tasks_assigned"'), true);
-  assert.match(html, /data-view="tasks_assigned"[^>]*>[^]*Mis tareas<\/button>/);
+test("las tareas viven en el dashboard y cada area usa un seguimiento compacto", () => {
+  assert.equal(html.includes('data-view="tasks_assigned"'), false);
+  assert.match(source, /MI BANDEJA/);
+  assert.match(source, /dashboardTasksWidget/);
   for (const view of ["tasks_flows", "tasks_comments", "tasks_rejections", "tasks_reassignments", "tasks_deadlines", "tasks_history"]) {
     assert.equal(html.includes('data-view="' + view + '"'), false);
   }
@@ -730,10 +735,12 @@ test("las tareas se integran en cada area sin saturar el menu lateral", () => {
     assert.match(source, new RegExp(module + ': "'));
   }
   assert.match(source, /data-operational-task-panel/);
-  assert.match(source, /El seguimiento de esta área permanece junto a su operación/);
+  assert.match(source, /<details class="module-workflow-menu">/);
+  assert.match(source, /3\)\.map/);
+  assert.doesNotMatch(source, /module-workflow-metrics/);
   assert.match(source, /taskModuleOptions\(defaultModule\)/);
   assert.match(source, /Área operativa<select name="module">/);
-  assert.match(source, /Flujos del sistema/);
+  assert.match(source, /Configurar flujo/);
   assert.match(source, /renderTasks/);
   assert.match(source, /openTaskModal/);
   assert.match(source, /openApprovalFlowModal/);
