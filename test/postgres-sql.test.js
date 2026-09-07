@@ -9,11 +9,19 @@ import {
 import {
   POSTGRES_INITIAL_RESPONSE_BYTES,
   POSTGRES_MAX_RESPONSE_BYTES,
+  isTransientPostgresConnectionError,
   postgresResponseBufferBytes,
   postgresTransactionState,
 } from "../src/db/postgres-sync.js";
 import { migrations } from "../src/db/schema.js";
 import { masterDefinitions } from "../src/core/masters.js";
+
+test("reconoce desconexiones transitorias de PostgreSQL sin confundir errores de datos", () => {
+  assert.equal(isTransientPostgresConnectionError(new Error("Connection terminated unexpectedly")), true);
+  assert.equal(isTransientPostgresConnectionError({ code: "ECONNRESET" }), true);
+  assert.equal(isTransientPostgresConnectionError({ code: "08006" }), true);
+  assert.equal(isTransientPostgresConnectionError({ code: "23505", message: "duplicate key" }), false);
+});
 
 test("traduce parámetros y conserva signos dentro de textos", () => {
   assert.equal(

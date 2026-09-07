@@ -108,7 +108,7 @@
       <label>Clasificación<select name="documentTypeId" id="portal-document-type" required></select></label>
       <label>Archivo<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg" required></label>
       <label>Descripción<textarea name="description" rows="3" maxlength="500"></textarea></label>
-      <div class="form-grid"><label>Fecha de emisión<input name="issueDate" type="date"></label><label>Fecha de vencimiento<input name="expiryDate" type="date"></label></div>
+      <div class="form-grid"><label>Fecha de emisión<input name="issueDate" type="date"></label><label id="portal-document-expiry-field" hidden>Fecha de vencimiento<input name="expiryDate" type="date" disabled></label></div>
       <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog>Cancelar</button><button class="primary" type="submit">Guardar documento</button></div>
     </form>
   </dialog>
@@ -134,6 +134,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/portal.js?v=20260807-81"></script>
+  <script type="module" src="/portal.js?v=20260901-01"></script>
 </body>
 </html>

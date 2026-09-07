@@ -31,10 +31,10 @@ pruebas solamente aparecera en un ERP que utilice la misma base PostgreSQL y el
 mismo esquema de empresa. El ERP de produccion no mostrara los registros de
 pruebas.
 
-Para iniciar el ERP de pruebas ejecute `INICIAR_ERP_PRUEBAS.cmd`. El proceso se
-mantiene en segundo plano y el navegador se abre cuando PostgreSQL responde. Use
-`DETENER_ERP_PRUEBAS.cmd` para apagar solamente el ERP de pruebas; el Centro de
-Gestion en el puerto 5151 permanece encendido.
+Para iniciar el Gestor y el ERP de pruebas ejecute `INICIAR_AMBIENTE_PRUEBAS.cmd`.
+Ambos procesos se mantienen en segundo plano y el navegador se abre cuando
+PostgreSQL responde. Use `DETENER_AMBIENTE_PRUEBAS.cmd` para apagar ambos
+servicios de pruebas de forma controlada.
 
 El ERP es una aplicacion de una sola pagina. Las rutas que aparecen en este
 manual son recorridos de menu, no direcciones web independientes.

@@ -9,15 +9,16 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $environmentSuffix = if ($EnvironmentName -eq "test") { "-test" } else { "" }
+$starterName = if ($EnvironmentName -eq "test") { "INICIAR_AMBIENTE_PRUEBAS.cmd" } else { "INICIAR_GESTOR_ABICORP.cmd" }
 $pidPath = Join-Path $projectRoot "config-local\control-server$environmentSuffix.pid"
 
 if (-not (Test-Path -LiteralPath $pidPath)) {
   $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
   if ($listener) {
-    throw "Hay un proceso en el puerto $Port, pero no fue iniciado por INICIAR_GESTOR_ABICORP.cmd. No se detendra automaticamente."
+    throw "Hay un proceso en el puerto $Port, pero no fue iniciado por $starterName. No se detendra automaticamente."
   }
   Write-Host "El Centro de Gestion ya esta detenido."
-  exit 0
+  return
 }
 
 $savedPid = 0
@@ -29,7 +30,7 @@ $process = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
 if (-not $process) {
   Remove-Item -LiteralPath $pidPath -Force
   Write-Host "El Centro de Gestion ya estaba detenido."
-  exit 0
+  return
 }
 if ($process.ProcessName -ne "node") {
   throw "El PID guardado ya no pertenece a Node.js. Se cancelo el apagado por seguridad."
@@ -46,7 +47,7 @@ if ($listeners.Count -eq 0) {
   if (-not $recentStartup) {
     Remove-Item -LiteralPath $pidPath -Force
     Write-Host "Se elimino un registro antiguo. No se detuvo ningun proceso."
-    exit 0
+    return
   }
 }
 

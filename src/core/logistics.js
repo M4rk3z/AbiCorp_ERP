@@ -35,22 +35,24 @@ export function control(db) {
   const shipments = db.prepare(`SELECT s.*, o.folio AS order_folio, o.status AS order_status,
     COALESCE(cu.trade_name, cu.legal_name) AS customer_name, w.code AS warehouse_code, w.name AS warehouse_name,
     r.folio AS route_folio, r.name AS route_name, ca.name AS carrier_name, d.folio AS delivery_folio,
-    COUNT(sl.id) AS line_count, COALESCE(SUM(sl.requested_quantity), 0) AS requested_quantity,
-    COALESCE(SUM(sl.picked_quantity), 0) AS picked_quantity, COALESCE(SUM(sl.packed_quantity), 0) AS packed_quantity,
+    (SELECT COUNT(*) FROM logistics_shipment_lines sl WHERE sl.shipment_id = s.id) AS line_count,
+    COALESCE((SELECT SUM(sl.requested_quantity) FROM logistics_shipment_lines sl WHERE sl.shipment_id = s.id), 0) AS requested_quantity,
+    COALESCE((SELECT SUM(sl.picked_quantity) FROM logistics_shipment_lines sl WHERE sl.shipment_id = s.id), 0) AS picked_quantity,
+    COALESCE((SELECT SUM(sl.packed_quantity) FROM logistics_shipment_lines sl WHERE sl.shipment_id = s.id), 0) AS packed_quantity,
     (SELECT COUNT(*) FROM logistics_evidence e WHERE e.shipment_id = s.id) AS evidence_count
     FROM logistics_shipments s JOIN sales_documents o ON o.id = s.order_id JOIN customers cu ON cu.id = o.customer_id
     JOIN warehouses w ON w.id = s.warehouse_id LEFT JOIN logistics_routes r ON r.id = s.route_id
     LEFT JOIN logistics_carriers ca ON ca.id = s.carrier_id LEFT JOIN sales_documents d ON d.id = s.sales_delivery_id
-    LEFT JOIN logistics_shipment_lines sl ON sl.shipment_id = s.id
-    GROUP BY s.id ORDER BY s.id DESC`).all();
-  const carriers = db.prepare(`SELECT c.*, COUNT(DISTINCT r.id) AS route_count, COUNT(DISTINCT s.id) AS shipment_count
-    FROM logistics_carriers c LEFT JOIN logistics_routes r ON r.carrier_id = c.id
-    LEFT JOIN logistics_shipments s ON s.carrier_id = c.id GROUP BY c.id ORDER BY c.is_active DESC, c.name`).all();
+    ORDER BY s.id DESC`).all();
+  const carriers = db.prepare(`SELECT c.*,
+    (SELECT COUNT(*) FROM logistics_routes r WHERE r.carrier_id = c.id) AS route_count,
+    (SELECT COUNT(*) FROM logistics_shipments s WHERE s.carrier_id = c.id) AS shipment_count
+    FROM logistics_carriers c ORDER BY c.is_active DESC, c.name`).all();
   const routes = db.prepare(`SELECT r.*, c.code AS carrier_code, c.name AS carrier_name,
-    COUNT(s.id) AS shipment_count,
-    SUM(CASE WHEN s.status = 'delivered' THEN 1 ELSE 0 END) AS delivered_count
+    (SELECT COUNT(*) FROM logistics_shipments s WHERE s.route_id = r.id) AS shipment_count,
+    (SELECT COUNT(*) FROM logistics_shipments s WHERE s.route_id = r.id AND s.status = 'delivered') AS delivered_count
     FROM logistics_routes r LEFT JOIN logistics_carriers c ON c.id = r.carrier_id
-    LEFT JOIN logistics_shipments s ON s.route_id = r.id GROUP BY r.id ORDER BY r.route_date DESC, r.id DESC`).all();
+    ORDER BY r.route_date DESC, r.id DESC`).all();
   const evidence = db.prepare(`SELECT e.*, s.folio AS shipment_folio, o.folio AS order_folio,
     COALESCE(c.trade_name, c.legal_name) AS customer_name, d.original_name, d.mime_type, d.size_bytes
     FROM logistics_evidence e JOIN logistics_shipments s ON s.id = e.shipment_id

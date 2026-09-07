@@ -85,6 +85,26 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(hrPolicies.response.status, 200);
   assert.equal(Array.isArray(hrPolicies.data.holidays), true);
   assert.equal(Array.isArray(hrPolicies.data.absenceLimits), true);
+  const emptyCompliance = await request("/api/hr/compliance");
+  assert.equal(emptyCompliance.response.status, 200);
+  assert.equal(emptyCompliance.data.indicators.open, 0);
+  const grievance = await request("/api/hr/compliance/grievances", {
+    method: "POST",
+    body: { title: "Canal confidencial de prueba", description: "Caso protegido creado durante la prueba de integración.",
+      category: "ethics", reporterType: "anonymous", severity: "high", confidentiality: "strict" },
+  });
+  assert.equal(grievance.response.status, 201);
+  assert.match(grievance.data.folio, /^CAS-\d{6}$/);
+  assert.equal((await request(`/api/hr/compliance/grievances/${grievance.data.id}/evidence`, {
+    method: "POST", body: { evidenceType: "note", title: "Nota de recepción", description: "Referencia inicial" },
+  })).response.status, 201);
+  assert.equal((await request(`/api/hr/compliance/grievances/${grievance.data.id}/action`, {
+    method: "POST", body: { action: "assign", investigatorUserId: loginData.user.id, comment: "Asignación de prueba" },
+  })).data.status, "triage");
+  const grievanceDetail = await request(`/api/hr/compliance/grievances/${grievance.data.id}`);
+  assert.equal(grievanceDetail.data.case.reporter_contact, "");
+  assert.equal(grievanceDetail.data.evidence.length, 1);
+  assert.equal(grievanceDetail.data.history.length, 3);
 
   const area = await request("/api/areas", {
     method: "POST",
@@ -248,6 +268,11 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(stock.response.status, 200);
   assert.equal(stock.data.balances.reduce((sum, row) => sum + row.quantity, 0), 95);
   assert.equal(stock.data.balances.reduce((sum, row) => sum + row.reserved_quantity, 0), 20);
+  const inventoryOverview = await request("/api/inventory/overview");
+  assert.equal(inventoryOverview.response.status, 200);
+  assert.equal(inventoryOverview.data.options.warehouses.length, 2);
+  assert.equal(inventoryOverview.data.balances.length, stock.data.balances.length);
+  assert.equal(inventoryOverview.data.movements.length, 4);
   const released = await request(`/api/inventory/reservations/${reservation.data.id}/release`, { method: "POST", body: {} });
   assert.equal(released.response.status, 200);
 
@@ -290,7 +315,15 @@ test("flujo principal del núcleo ERP", async (t) => {
 
   const jobPosition = await request("/api/hr/job-positions", {
     method: "POST",
-    body: { name: "Coordinación SST", description: "Responsable de seguridad y salud" },
+    body: {
+      name: "Coordinación SST",
+      description: "Coordinar el sistema de seguridad y salud y reportar a Dirección.",
+      profileEducation: "Ingeniería Industrial o afín.",
+      profileExperience: "Tres años en seguridad industrial.",
+      profileKnowledge: "Normatividad SST y análisis de riesgos.",
+      profileSkills: "Comunicación, organización y análisis.",
+      profileCompetencies: "Liderazgo preventivo y orientación a resultados.",
+    },
   });
   assert.equal(jobPosition.response.status, 201);
   assert.match(jobPosition.data.folio, /^PUE-\d{5}$/);
@@ -320,6 +353,13 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.match(splitWorkShift.data.folio, /^TUR-\d{5}$/);
   const hrOptions = await request("/api/hr/options");
   assert.equal(hrOptions.data.areaCatalog.some((row) => row.code === "PROD" && row.description === "Operaciones de manufactura"), true);
+  const savedPositionProfile = hrOptions.data.jobPositions.find((row) => row.id === jobPosition.data.id);
+  assert.match(savedPositionProfile.description, /Coordinar el sistema/);
+  assert.match(savedPositionProfile.profile_education, /Ingeniería Industrial/);
+  assert.match(savedPositionProfile.profile_experience, /Tres años/);
+  assert.match(savedPositionProfile.profile_knowledge, /Normatividad SST/);
+  assert.match(savedPositionProfile.profile_skills, /Comunicación/);
+  assert.match(savedPositionProfile.profile_competencies, /Liderazgo preventivo/);
   const savedSplitShift = hrOptions.data.workShifts.find((row) => row.id === splitWorkShift.data.id);
   assert.equal(JSON.parse(savedSplitShift.schedule_json).length, 2);
   assert.equal(JSON.parse(savedSplitShift.schedule_json)[0].periods.length, 2);
@@ -475,10 +515,32 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(retainedPhoto.status, 200);
   const updatedPosition = await request(`/api/hr/job-positions/${jobPosition.data.id}`, {
     method: "PATCH",
-    body: { name: "Coordinación SST y ambiente", description: "Responsable del sistema integral" },
+    body: {
+      name: "Coordinación SST y ambiente",
+      description: "Administrar el sistema integral y sus indicadores.",
+      profileEducation: "Ingeniería Ambiental, Industrial o afín.",
+      profileExperience: "Cuatro años en SST y ambiente.",
+      profileKnowledge: "ISO 14001, ISO 45001 y legislación aplicable.",
+      profileSkills: "Análisis, comunicación y gestión de proyectos.",
+      profileCompetencies: "Liderazgo, ética y orientación preventiva.",
+    },
   });
   assert.equal(updatedPosition.response.status, 200);
   assert.equal(updatedPosition.data.folio, jobPosition.data.folio);
+  const renamedPosition = await request(`/api/hr/job-positions/${jobPosition.data.id}`, {
+    method: "PATCH",
+    body: { name: "Coordinación SST y ambiente" },
+  });
+  assert.equal(renamedPosition.response.status, 200);
+  const optionsAfterPartialPositionUpdate = await request("/api/hr/options");
+  const positionAfterPartialUpdate = optionsAfterPartialPositionUpdate.data.jobPositions
+    .find((row) => row.id === jobPosition.data.id);
+  assert.equal(positionAfterPartialUpdate.description, "Administrar el sistema integral y sus indicadores.");
+  assert.match(positionAfterPartialUpdate.profile_education, /Ingeniería Ambiental/);
+  assert.match(positionAfterPartialUpdate.profile_experience, /Cuatro años/);
+  assert.match(positionAfterPartialUpdate.profile_knowledge, /ISO 14001/);
+  assert.match(positionAfterPartialUpdate.profile_skills, /gestión de proyectos/);
+  assert.match(positionAfterPartialUpdate.profile_competencies, /orientación preventiva/);
   const updatedShift = await request(`/api/hr/work-shifts/${splitWorkShift.data.id}`, {
     method: "PATCH",
     body: {
@@ -1121,6 +1183,24 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(documentDetail.data.accessLog.some((entry) => entry.action === "consult"), true);
   const documentOptions = await request("/api/documents");
   const contractDocumentType = documentOptions.data.documentTypes.find((entry) => entry.code === "CONTRACT");
+  const curpDocumentType = documentOptions.data.documentTypes.find((entry) => entry.code === "CURP");
+  const officialIdDocumentType = documentOptions.data.documentTypes.find((entry) => entry.code === "OFFICIAL_ID");
+  const medicalDocumentType = documentOptions.data.documentTypes.find((entry) => entry.code === "MEDICAL");
+  const otherDocumentType = documentOptions.data.documentTypes.find((entry) => entry.code === "OTHER");
+  assert.equal(curpDocumentType.allows_expiry_date, 0);
+  assert.equal(contractDocumentType.allows_expiry_date, 0);
+  assert.equal(officialIdDocumentType.allows_expiry_date, 1);
+  assert.equal(medicalDocumentType.allows_expiry_date, 1);
+  assert.equal(otherDocumentType.allows_expiry_date, 1);
+  const rejectedCurpExpiry = await request("/api/documents", {
+    method: "POST",
+    body: { originalName: "curp-invalida.pdf", mimeType: "application/pdf",
+      contentBase64: Buffer.from("curp con vencimiento").toString("base64"), module: "hr",
+      entityType: "employee", entityId: String(hrPerson.data.id), employeeId: hrPerson.data.id,
+      documentTypeId: curpDocumentType.id, expiryDate: "2027-01-01" },
+  });
+  assert.equal(rejectedCurpExpiry.response.status, 400);
+  assert.match(rejectedCurpExpiry.data.error, /no maneja fecha de vencimiento/);
   const contractV1 = await request("/api/documents", {
     method: "POST",
     body: { originalName: "contrato-v1.pdf", mimeType: "application/pdf",
@@ -1143,6 +1223,11 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(firstContract.is_current, 0);
   assert.equal(secondContract.is_current, 1);
   assert.equal(secondContract.version_number, 2);
+  const employeeDocuments = await request("/api/documents?employeeId=" + hrPerson.data.id);
+  assert.equal(employeeDocuments.response.status, 200);
+  assert.equal(employeeDocuments.data.documents.every((entry) => entry.employee_id === hrPerson.data.id), true);
+  assert.equal(employeeDocuments.data.documents.some((entry) => entry.id === document.data.id), false);
+  assert.equal((await request("/api/documents?employeeId=no-valido")).response.status, 400);
   const retiredVersion = await request(`/api/documents/${contractV2.data.id}`, { method: "DELETE", body: {} });
   assert.equal(retiredVersion.response.status, 200);
   const documentsAfterRetirement = await request("/api/documents");

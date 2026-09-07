@@ -1,14 +1,18 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { Client, types } from "pg";
 import { quoteIdentifier, translatePostgresSql } from "./postgres-sql.js";
+import { isTransientPostgresConnectionError } from "./postgres-sync.js";
 
 const HEADER_BYTES = 8;
 const RESPONSE_TOO_LARGE_CODE = "ABICORP_RESPONSE_TOO_LARGE";
+const POSTGRES_CONNECT_ATTEMPTS = 6;
 const encoder = new TextEncoder();
 const initBuffer = workerData.initBuffer;
 const connectionString = workerData.connectionString;
 const schema = workerData.schema;
 let client;
+let reconnecting;
+let closing = false;
 let queue = Promise.resolve();
 
 types.setTypeParser(20, (value) => Number(value));
@@ -22,10 +26,7 @@ initialize().catch((error) => {
 });
 
 async function initialize() {
-  client = await connectWithRetry();
-  await client.query("CREATE EXTENSION IF NOT EXISTS citext");
-  await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schema)}`);
-  await client.query(`SET search_path TO ${quoteIdentifier(schema)}, public`);
+  await ensureConnected();
   respond(initBuffer, { ok: true });
 
   parentPort.on("message", (message) => {
@@ -37,32 +38,81 @@ async function initialize() {
 
 async function connectWithRetry() {
   let lastError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= POSTGRES_CONNECT_ATTEMPTS; attempt += 1) {
     const candidate = new Client({
       connectionString,
       application_name: `abicorp-${schema}`,
       keepAlive: true,
-      connectionTimeoutMillis: 20_000,
+      connectionTimeoutMillis: 25_000,
     });
     try {
       await candidate.connect();
+      candidate.on("error", () => {
+        if (client === candidate) client = null;
+      });
       return candidate;
     } catch (error) {
       lastError = error;
       await candidate.end().catch(() => {});
-      if (!["ECONNRESET", "ETIMEDOUT", "EPIPE"].includes(error?.code) || attempt === 3) {
+      if (!isTransientPostgresConnectionError(error) || attempt === POSTGRES_CONNECT_ATTEMPTS) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(attempt * 2_000, 10_000)));
     }
   }
   throw lastError;
 }
 
+async function ensureConnected() {
+  if (client) return client;
+  if (!reconnecting) {
+    reconnecting = (async () => {
+      const connected = await connectWithRetry();
+      try {
+        client = connected;
+        await connected.query("CREATE EXTENSION IF NOT EXISTS citext");
+        await connected.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schema)}`);
+        await connected.query(`SET search_path TO ${quoteIdentifier(schema)}, public`);
+        return connected;
+      } catch (error) {
+        if (client === connected) client = null;
+        await connected.end().catch(() => {});
+        throw error;
+      }
+    })().finally(() => {
+      reconnecting = null;
+    });
+  }
+  return reconnecting;
+}
+
+async function discardClient(candidate) {
+  if (client === candidate) client = null;
+  await candidate?.end().catch(() => {});
+}
+
+async function query(text, params) {
+  let active = await ensureConnected();
+  try {
+    return await active.query(text, params);
+  } catch (error) {
+    if (closing || !isTransientPostgresConnectionError(error)) throw error;
+    await discardClient(active);
+    await ensureConnected().catch(() => {});
+    const recovered = new Error("La conexión PostgreSQL se restableció. Intenta nuevamente la operación.");
+    recovered.code = "ABICORP_POSTGRES_RECONNECTED";
+    recovered.cause = error;
+    throw recovered;
+  }
+}
+
 async function handle(message) {
   const { type, payload = {}, buffer } = message;
   if (type === "close") {
-    await client.end();
+    closing = true;
+    const active = client;
+    client = null;
+    await active?.end().catch(() => {});
     respond(buffer, { ok: true, value: null });
     parentPort.close();
     return;
@@ -74,7 +124,7 @@ async function handle(message) {
       respond(buffer, { ok: true, value: null });
       return;
     }
-    const result = await client.query(translatePostgresSql(source));
+    const result = await query(translatePostgresSql(source));
     respond(buffer, { ok: true, value: summarize(result) });
     return;
   }
@@ -88,7 +138,7 @@ async function handle(message) {
   );
   let result;
   if (pragma) {
-    result = await client.query(
+    result = await query(
       `SELECT ordinal_position - 1 AS cid, column_name AS name, data_type AS type,
         CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
         column_default AS dflt_value,
@@ -108,7 +158,7 @@ async function handle(message) {
       [pragma[1]],
     );
   } else {
-    result = await client.query(
+    result = await query(
       translatePostgresSql(payload.sql, { returning: type === "run" }),
       payload.params ?? [],
     );

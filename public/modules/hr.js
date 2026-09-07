@@ -32,7 +32,7 @@ export function createHrModule(context) {
     state.hrOptions = options;
     state.hrControl = control;
     pageContent.innerHTML =
-      '<section class="workforce-command hr-command"><div class="workforce-command-copy"><span class="workforce-live"><i></i>PERSONAL CONECTADO</span><h2>Organiza a tu equipo</h2><p>Expedientes, permisos, vacaciones e incapacidades en un mismo centro.</p><div class="workforce-command-kpis"><div><strong>' + control.indicators.activePeople + '</strong><span>personas activas</span></div><div><strong>' + control.indicators.awayToday + '</strong><span>ausentes hoy</span></div></div><div class="workforce-command-actions">' + (hasPermission("hr.manage") ? '<button class="button ghost light" data-hr-bulk>Carga masiva</button><button class="button ghost light" data-hr-schedules>Visualizar horarios</button><button class="button ghost light" data-hr-portal>Portal colaboradores</button><button class="button ghost light" data-hr-catalogs>⚙ Catálogos</button>' : "") + '</div></div>' +
+      '<section class="workforce-command hr-command"><div class="workforce-command-copy"><span class="workforce-live"><i></i>PERSONAL CONECTADO</span><h2>Organiza a tu equipo</h2><p>Expedientes, permisos, vacaciones e incapacidades en un mismo centro.</p><div class="workforce-command-kpis"><div><strong>' + control.indicators.activePeople + '</strong><span>personas activas</span></div><div><strong>' + control.indicators.awayToday + '</strong><span>ausentes hoy</span></div></div><div class="workforce-command-actions">' + (hasPermission("hr.manage") ? '<button class="button ghost light" data-hr-bulk>Carga masiva</button><button class="button ghost light" data-hr-schedules>Visualizar horarios</button><button class="button ghost light" data-hr-portal>Portal colaboradores</button><button class="button ghost light" data-hr-catalogs>⚙ Catálogos</button>' : "") + (hasPermission("hr.compliance.view") ? '<button class="button ghost light" data-hr-compliance>◈ Cumplimiento</button>' : "") + '</div></div>' +
       hrPeopleScene(control) + '</section>' +
       hrAnalyticsDashboard(control) +
       hrUnifiedDashboard(control);
@@ -42,10 +42,12 @@ export function createHrModule(context) {
     const bulkButton = $("[data-hr-bulk]");
     const portalButton = $("[data-hr-portal]");
     const schedulesButton = $("[data-hr-schedules]");
+    const complianceButton = $("[data-hr-compliance]");
     if (catalogsButton) catalogsButton.onclick = () => openHrCatalogsModal();
     if (bulkButton) bulkButton.onclick = () => openHrBulkImportModal();
     if (portalButton) portalButton.onclick = () => openHrPortalModal();
     if (schedulesButton) schedulesButton.onclick = () => openHrSchedulesModal();
+    if (complianceButton) complianceButton.onclick = () => openHrComplianceModal();
     $$("[data-hr-employee-action]").forEach((button) => button.onclick = () => openHrModal(button.dataset.hrEmployeeAction, Number(button.dataset.employeeId)));
     $$("[data-hr-deactivate]").forEach((button) => button.onclick = () => openHrDeactivateModal(Number(button.dataset.hrDeactivate)));
     $$(".hr-row-actions").forEach((menu) => menu.addEventListener("toggle", () => {
@@ -63,6 +65,21 @@ export function createHrModule(context) {
     $$("[data-hr-print]").forEach((button) => button.onclick = () => printHrLeaveReceipt(Number(button.dataset.hrPrint)));
   }
   
+  let hrComplianceModulePromise = null;
+
+  async function openHrComplianceModal() {
+    if (!hrComplianceModulePromise) {
+      hrComplianceModulePromise = import("./hr-compliance.js?v=20260821-01")
+        .then(({ createHrComplianceModule }) => createHrComplianceModule({
+          $, $$, api, hasPermission, entityDialog, escapeHtml, toast, formatDate,
+          formatDateOnly, emptyMarkup,
+        }))
+        .catch((error) => { hrComplianceModulePromise = null; throw error; });
+    }
+    const compliance = await hrComplianceModulePromise;
+    return compliance.open();
+  }
+
   async function openHrSchedulesModal(periodId = "", calendarStart = "") {
     try {
       const query = new URLSearchParams();
@@ -401,7 +418,9 @@ export function createHrModule(context) {
       { key: "general", number: "01", label: "Resumen", detail: "Datos generales y contacto" },
       { key: "identity", number: "02", label: "Identidad", detail: "Fiscal, personal y domicilio" },
       { key: "labor", number: "03", label: "Laboral", detail: "Puesto, contrato y nómina" },
-      { key: "portal", number: "04", label: "Portal", detail: "Usuario, PIN y permisos" },
+      { key: "position", number: "04", label: "Puesto", detail: "Descriptivo y perfil" },
+      { key: "documents", number: "05", label: "Documentos", detail: "Archivos y vigencias" },
+      { key: "portal", number: "06", label: "Portal", detail: "Usuario, PIN y permisos" },
     ];
     const panels = new Map(definitions.map((item) => {
       const panel = document.createElement("section");
@@ -420,6 +439,8 @@ export function createHrModule(context) {
       if (node === completionNode) return;
       const title = node.firstElementChild?.textContent?.trim().toUpperCase() || "";
       const key = node.classList.contains("hr-sensitive-section") ? "labor"
+        : node.hasAttribute("data-hr-position-profile-section") ? "position"
+        : node.hasAttribute("data-hr-documents-section") ? "documents"
         : /ACCESO AL PORTAL/.test(title) ? "portal"
         : /IDENTIDAD PERSONAL|DOMICILIO/.test(title) ? "identity"
           : /CONDICIONES LABORALES|ADSCRIPCIÓN LABORAL|CONTRATO Y NÓMINA|SALARIO/.test(title) ? "labor"
@@ -464,6 +485,167 @@ export function createHrModule(context) {
       if (panel?.hidden) activate(panel.dataset.hrProfilePanel);
     }, true);
     activate(initialTab);
+  }
+
+  function hrPositionProfileMarkup(person, position) {
+    if (!position) return '<div class="hr-registration-section hr-position-profile" data-hr-position-profile-section><span>DOCUMENTACIÓN DEL PUESTO</span><div class="hr-position-profile-empty"><i>＋</i><div><h3>Sin puesto asignado</h3><p>Selecciona un puesto en la pestaña Laboral para vincular su descriptivo y perfil.</p></div></div></div>';
+    const facts = [
+      ["Código", position.code],
+      ["Empresa", person.company_name],
+      ["Centro de trabajo", person.work_center_name],
+      ["Departamento", person.department_name],
+      ["Área", person.area_name],
+      ["Jefe inmediato", person.manager_name],
+      ["Turno", person.shift_name || hrShift(person.shift)],
+    ].filter(([, value]) => value).map(([label, value]) => '<div><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>').join("");
+    const description = escapeHtml(position.description || "El descriptivo de este puesto todavía no está registrado.").replace(/\r?\n/g, "<br>");
+    const profileRows = [
+      ["Estudios", position.profile_education],
+      ["Experiencia", position.profile_experience],
+      ["Conocimientos", position.profile_knowledge],
+      ["Habilidades", position.profile_skills],
+      ["Competencias", position.profile_competencies],
+    ].map(([label, value]) => '<div><span>' + label + '</span><p>' + escapeHtml(value || "Sin definir").replace(/\r?\n/g, "<br>") + '</p></div>').join("");
+    return '<div class="hr-registration-section hr-position-profile" data-hr-position-profile-section><span>DOCUMENTACIÓN DEL PUESTO</span><header><div><small>' + escapeHtml(position.code || "SIN FOLIO") + '</small><h3>' + escapeHtml(position.name) + '</h3><p>El descriptivo define el trabajo; el perfil define a la persona adecuada para realizarlo.</p></div>' + (hasPermission("hr.manage") ? '<button class="button ghost" type="button" data-edit-profile-position>Editar definición</button>' : "") + '</header><div class="hr-position-profile-facts">' + facts + '</div><section class="hr-position-definition descriptive"><header><div><span>DESCRIPTIVO DE PUESTO</span><strong>¿Qué hace este puesto?</strong></div><button class="button ghost" type="button" data-print-position-document="description">Imprimir descriptivo</button></header><p>' + description + '</p></section><section class="hr-position-definition profile"><header><div><span>PERFIL DE PUESTO</span><strong>¿Quién puede desempeñar este puesto?</strong></div><button class="button primary" type="button" data-print-position-document="profile">Imprimir perfil</button></header><div class="hr-position-profile-requirements">' + profileRows + '</div></section></div>';
+  }
+
+  function bindHrPositionProfile(person, position) {
+    const section = $("[data-hr-position-profile-section]");
+    if (!section || !position) return;
+    $$("[data-print-position-document]", section).forEach((button) => button.onclick = () =>
+      printHrPositionProfile(position, person, button.dataset.printPositionDocument)
+    );
+    const edit = $("[data-edit-profile-position]", section);
+    if (edit) edit.onclick = () => openHrCatalogsModal("positions", "", position.id);
+  }
+
+  function hrDocumentSensitivityLabel(value) {
+    return ({ standard: "General", fiscal: "Fiscal", salary: "Salarial restringido", cfdi: "CFDI restringido", medical: "Médico restringido" })[value]
+      || value || "General";
+  }
+
+  function hrDocumentSize(value) {
+    const bytes = Number(value || 0);
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function hrEmployeeDocumentsMarkup(person, data = {}) {
+    const documents = (data.documents || []).filter((row) => Number(row.employee_id) === Number(person.id));
+    const currentDocuments = documents.filter((row) => Number(row.is_current) === 1);
+    const documentTypes = data.documentTypes || [];
+    const missing = new Set(person.missing_file_documents || []);
+    const requiredTypes = documentTypes.filter((row) => Number(row.required_for_active) === 1);
+    const checklist = requiredTypes.map((type) => {
+      const document = currentDocuments.find((row) => Number(row.document_type_id) === Number(type.id));
+      return '<article class="hr-document-check ' + (document ? "ready" : "pending") + '"><i>' + (document ? "✓" : "!") + '</i><span><strong>' + escapeHtml(type.name) + '</strong><small>' + (document ? "Documento vigente · v" + Number(document.version_number || 1) : "Pendiente de cargar") + '</small></span></article>';
+    }).join("");
+    const typeOptions = documentTypes.map((type) => '<option value="' + type.id + '" data-sensitive="' + escapeAttribute(type.sensitivity) + '" data-issue="' + Number(type.requires_issue_date || 0) + '" data-expiry="' + Number(type.requires_expiry_date || 0) + '" data-allows-expiry="' + Number(type.allows_expiry_date || 0) + '">' + escapeHtml(type.name + (missing.has(type.name) ? " · pendiente" : "")) + '</option>').join("");
+    const rows = documents.map((document) => '<article class="hr-employee-document ' + (document.is_current ? "current" : "previous") + '"><div class="hr-document-symbol">' + (document.is_current ? "DOC" : "v" + Number(document.version_number || 1)) + '</div><div><strong>' + escapeHtml(document.document_type_name || "Documento") + '</strong><span>' + escapeHtml(document.original_name) + '</span><small>' + formatDate(document.created_at) + ' · ' + hrDocumentSize(document.size_bytes) + ' · ' + hrDocumentSensitivityLabel(document.sensitivity) + '</small></div><div class="hr-document-actions"><b>' + (document.is_current ? "VIGENTE" : "ANTERIOR") + '</b><a href="' + API_BASE + '/api/documents/' + document.id + '/download">Descargar</a>' + (hasPermission("documents.manage") ? '<button type="button" data-delete-hr-document="' + document.id + '">Eliminar</button>' : "") + '</div></article>').join("");
+    const upload = hasPermission("documents.manage")
+      ? '<div class="hr-document-upload" data-hr-document-upload><header><div><span>AGREGAR AL EXPEDIENTE</span><h4>Cargar o reemplazar documento</h4></div><small>Máximo 8 MB</small></header><label>Archivo<input type="file" data-hr-document-file></label><div class="form-grid"><label>Clasificación<select data-hr-document-type><option value="">Selecciona el tipo documental</option>' + typeOptions + '</select><small data-hr-document-access>La clasificación determina los permisos de acceso.</small></label><label>Fecha de emisión<input type="date" data-hr-document-issue></label><label data-hr-document-expiry-field hidden>Fecha de vencimiento<input type="date" data-hr-document-expiry disabled></label><label>Descripción<input data-hr-document-description maxlength="500" placeholder="Ej. Documento firmado"></label></div><p class="form-error hidden" data-hr-document-error></p><button class="button primary" type="button" data-upload-hr-document>↑ Guardar documento</button></div>'
+      : '<p class="hr-document-readonly">Puedes consultar y descargar los documentos. La carga requiere permiso de administración documental.</p>';
+    return '<div class="hr-registration-section hr-profile-documents" data-hr-documents-section><span>DOCUMENTOS DEL EXPEDIENTE</span><header class="hr-documents-head"><div><h3>Expediente documental</h3><p>Completa los requisitos del colaborador sin salir de Gestión de personas.</p></div><strong>' + currentDocuments.length + ' vigente(s)</strong></header>' + (checklist ? '<div class="hr-document-checklist">' + checklist + '</div>' : "") + upload + '<section class="hr-employee-document-list"><header><strong>Archivos vinculados</strong><small>' + documents.length + ' archivo(s), incluidas versiones anteriores</small></header>' + (rows || '<div class="hr-document-empty"><strong>Aún no hay documentos</strong><small>Carga el primer archivo para comenzar el expediente.</small></div>') + '</section></div>';
+  }
+
+  async function refreshHrPersonModal(employeeId, initialTab = "documents") {
+    const control = await api("/api/hr/control", { cache: false });
+    state.hrControl = control;
+    state.hrOptions = control.options || state.hrOptions;
+    await openHrEditPersonModal(employeeId, initialTab);
+  }
+
+  function bindHrEmployeeDocuments(person) {
+    const section = $("[data-hr-documents-section]");
+    if (!section) return;
+    const type = $("[data-hr-document-type]", section);
+    const issue = $("[data-hr-document-issue]", section);
+    const expiry = $("[data-hr-document-expiry]", section);
+    const expiryField = $("[data-hr-document-expiry-field]", section);
+    const access = $("[data-hr-document-access]", section);
+    const syncRules = () => {
+      const option = type?.selectedOptions?.[0];
+      const allowsExpiry = option?.dataset.allowsExpiry === "1";
+      if (issue) issue.dataset.required = String(option?.dataset.issue === "1");
+      if (expiryField) expiryField.hidden = !allowsExpiry;
+      if (expiry) {
+        expiry.disabled = !allowsExpiry;
+        expiry.dataset.required = String(allowsExpiry && option?.dataset.expiry === "1");
+        if (!allowsExpiry) expiry.value = "";
+      }
+      if (access) access.textContent = option?.value
+        ? "Acceso: " + hrDocumentSensitivityLabel(option.dataset.sensitive)
+        : "La clasificación determina los permisos de acceso.";
+    };
+    if (type) { type.onchange = syncRules; syncRules(); }
+    const upload = $("[data-upload-hr-document]", section);
+    if (upload) upload.onclick = async () => {
+      const file = $("[data-hr-document-file]", section)?.files?.[0];
+      const errorBox = $("[data-hr-document-error]", section);
+      errorBox.classList.add("hidden");
+      if (!file?.size) { errorBox.textContent = "Selecciona un archivo."; return errorBox.classList.remove("hidden"); }
+      if (!type.value) { errorBox.textContent = "Selecciona la clasificación del documento."; return errorBox.classList.remove("hidden"); }
+      if (file.size > 8 * 1024 * 1024) { errorBox.textContent = "El archivo supera el límite de 8 MB."; return errorBox.classList.remove("hidden"); }
+      if ((issue.dataset.required === "true" && !issue.value) || (expiry.dataset.required === "true" && !expiry.value)) {
+        errorBox.textContent = "Completa las fechas obligatorias de esta clasificación.";
+        return errorBox.classList.remove("hidden");
+      }
+      upload.disabled = true;
+      upload.textContent = "Cargando…";
+      try {
+        await api("/api/documents", { method: "POST", body: {
+          originalName: file.name, mimeType: file.type || "application/octet-stream",
+          contentBase64: await fileToBase64(file), module: "hr", entityType: "employee",
+          entityId: String(person.id), employeeId: person.id, documentTypeId: type.value,
+          issueDate: issue.value, expiryDate: expiry.value,
+          description: $("[data-hr-document-description]", section)?.value || "",
+        } });
+        toast("Documento integrado al expediente.");
+        await refreshHrPersonModal(person.id, "documents");
+      } catch (error) {
+        upload.disabled = false;
+        upload.textContent = "↑ Guardar documento";
+        errorBox.textContent = error.message;
+        errorBox.classList.remove("hidden");
+      }
+    };
+    $$('[data-delete-hr-document]', section).forEach((button) => button.onclick = async () => {
+      if (!await confirmAction({ eyebrow: "EXPEDIENTE DEL COLABORADOR", title: "Eliminar documento", message: "Si eliminas la versión vigente, se restaurará automáticamente la versión anterior.", confirmLabel: "Eliminar documento", tone: "danger" })) return;
+      try {
+        await api("/api/documents/" + button.dataset.deleteHrDocument, { method: "DELETE" });
+        toast("Documento eliminado.");
+        await refreshHrPersonModal(person.id, "documents");
+      } catch (error) { toast(error.message, "error"); }
+    });
+  }
+
+  function printHrPositionProfile(position, person = null, documentType = "profile") {
+    if (!position) return toast("El colaborador no tiene un puesto asignado.", "error");
+    const printWindow = window.open("", "_blank", "width=920,height=760");
+    if (!printWindow) return toast("El navegador bloqueó la ventana de impresión.", "error");
+    printWindow.opener = null;
+    const isDescription = documentType === "description";
+    const title = isDescription ? "Descriptivo de puesto" : "Perfil de puesto";
+    const question = isDescription ? "¿Qué hace este puesto?" : "¿Quién puede desempeñar este puesto?";
+    const detailRows = person ? [
+      ["Colaborador de referencia", person.full_name], ["Folio", person.employee_number],
+      ["Empresa", person.company_name], ["Centro de trabajo", person.work_center_name],
+      ["Departamento", person.department_name], ["Área", person.area_name],
+      ["Jefe inmediato", person.manager_name], ["Turno", person.shift_name || hrShift(person.shift)],
+    ].filter(([, value]) => value).map(([label, value]) => '<div><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>').join("") : "";
+    const requirementRows = [
+      ["Estudios", position.profile_education],
+      ["Experiencia", position.profile_experience],
+      ["Conocimientos", position.profile_knowledge],
+      ["Habilidades", position.profile_skills],
+      ["Competencias", position.profile_competencies],
+    ].map(([label, value]) => '<div><span>' + label + '</span><p>' + escapeHtml(value || "Sin definir").replace(/\r?\n/g, "<br>") + '</p></div>').join("");
+    const documentBody = isDescription
+      ? '<section class="document"><h2>Funciones, responsabilidades, objetivos, autoridad y relaciones de trabajo</h2><p>' + escapeHtml(position.description || "Sin descriptivo registrado.").replace(/\r?\n/g, "<br>") + '</p></section>'
+      : '<section class="requirements">' + requirementRows + '</section>';
+    printWindow.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>' + title + ' · ' + escapeHtml(position.name) + '</title><style>@page{size:letter;margin:18mm}*{box-sizing:border-box}body{margin:0;color:#173d31;font-family:Arial,sans-serif}header{display:flex;justify-content:space-between;gap:24px;align-items:end;border-bottom:4px solid #c8f36b;padding-bottom:18px}header small,span{color:#687a72;font-size:11px;letter-spacing:.08em;text-transform:uppercase}h1{margin:6px 0 0;font:700 28px Georgia,serif}header b{border:1px solid #bdd0c6;padding:8px 12px;font:700 12px monospace}.question{margin:8px 0 0;color:#63766c;font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:24px 0}.grid div,.requirements div{border:1px solid #dce5e0;padding:12px}.grid span,.grid strong{display:block}.grid strong{margin-top:5px;font-size:13px}.document{margin-top:24px;border-left:4px solid #c8f36b;padding:20px;background:#f7faf8}.document h2{margin:0 0 14px;font:700 17px Georgia,serif}.document p,.requirements p{margin:0;color:#344d43;font-size:13px;line-height:1.7}.requirements{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:24px}.requirements div:last-child{grid-column:1/-1}.requirements p{margin-top:8px}.foot{margin-top:36px;padding-top:12px;border-top:1px solid #dce5e0;color:#7a8982;font-size:10px}@media print{button{display:none}}</style></head><body><header><div><small>ABICORP · RECURSOS HUMANOS</small><h1>' + title + '</h1><p class="question">' + question + '</p></div><b>' + escapeHtml(position.code || "SIN FOLIO") + '</b></header><section class="grid"><div><span>Nombre del puesto</span><strong>' + escapeHtml(position.name) + '</strong></div>' + detailRows + '</section>' + documentBody + '<p class="foot">Documento generado desde Gestión de personas el ' + escapeHtml(new Date().toLocaleDateString("es-MX")) + '.</p><script>window.addEventListener("load",()=>setTimeout(()=>window.print(),120));<\/script></body></html>');
+    printWindow.document.close();
   }
   
   function hrAnalyticsDashboard(control) {
@@ -848,12 +1030,21 @@ export function createHrModule(context) {
   function hrLeavePrintDocument(receipt) {
     const request = receipt.request || {};
     const balance = receipt.balance;
+    const stylesheetUrl = escapeAttribute(new URL("./hr-receipt.css?v=20260826-01", window.location.href).href);
+    const logoUrl = escapeAttribute(new URL("./assets/abicorp-logo.png", window.location.href).href);
+    const issuedAt = escapeHtml(new Intl.DateTimeFormat("es-MX", { dateStyle: "long", timeStyle: "short" }).format(new Date()));
     const balanceRows = request.leave_type === "vacation" && balance ? `
-      <section class="balance"><div><span>Saldo disponible al solicitar</span><strong>${inventoryNumber(balance.available_before)} días</strong></div><div><span>Días solicitados</span><strong>${inventoryNumber(balance.requested_days)} días</strong></div><div><span>Saldo proyectado</span><strong>${inventoryNumber(balance.available_after)} días</strong></div><div class="${Number(balance.advance_days) > 0 ? "warning" : ""}"><span>Días anticipados</span><strong>${inventoryNumber(balance.advance_days)} días</strong></div></section>` : "";
+      <section class="receipt-balance" aria-label="Saldo de vacaciones"><div><span>Saldo inicial</span><strong>${inventoryNumber(balance.available_before)} días</strong></div><div><span>Solicitados</span><strong>${inventoryNumber(balance.requested_days)} días</strong></div><div><span>Saldo proyectado</span><strong>${inventoryNumber(balance.available_after)} días</strong></div><div class="${Number(balance.advance_days) > 0 ? "warning" : ""}"><span>Anticipados</span><strong>${inventoryNumber(balance.advance_days)} días</strong></div></section>` : "";
     const history = (receipt.history || []).map((entry) => `<tr><td>${formatDate(entry.created_at)}</td><td>${escapeHtml(entry.actor_name || entry.actor_type || "Sistema")}</td><td>${escapeHtml(hrLeaveStatusLabel(entry.new_status))}</td><td>${escapeHtml(entry.comments || "—")}</td></tr>`).join("");
-    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escapeHtml(request.folio || "Solicitud")}</title><style>
-      :root{color:#11281f;font-family:Arial,sans-serif}*{box-sizing:border-box}body{margin:0;background:#eef2ef;color:#18231e}.sheet{width:210mm;min-height:277mm;margin:12mm auto;background:#fff;padding:17mm;box-shadow:0 8px 30px #0002}.top{display:flex;justify-content:space-between;gap:25px;border-bottom:3px solid #144d38;padding-bottom:14px}.brand{font-weight:900;letter-spacing:.15em;color:#144d38}.folio{text-align:right}.folio small,.label,dt,.balance span{display:block;color:#5e7067;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.folio strong{font:700 20px Consolas,monospace}.status{display:inline-block;margin-top:8px;border:1px solid #9dbbad;padding:5px 9px;color:#144d38;font-size:11px;font-weight:800}.title{margin:28px 0 20px}.title h1{margin:5px 0;font:400 30px Georgia,serif}.title p{margin:0;color:#63736b}.grid{display:grid;grid-template-columns:repeat(2,1fr);border:1px solid #ccd8d1}.grid div{min-height:59px;padding:12px 14px;border-right:1px solid #dbe3de;border-bottom:1px solid #dbe3de}.grid div:nth-child(2n){border-right:0}.grid strong,dd{display:block;margin:5px 0 0}.reason{margin-top:18px;border:1px solid #ccd8d1;padding:14px;min-height:75px}.reason p{white-space:pre-wrap}.balance{display:grid;grid-template-columns:repeat(4,1fr);margin-top:18px;border:1px solid #98bea9;background:#f0f7f3}.balance div{padding:13px;border-right:1px solid #bed3c7}.balance div:last-child{border:0}.balance strong{display:block;margin-top:7px;font-size:19px}.balance .warning{background:#fff4d8;color:#795000}.notice{margin:16px 0;padding:10px 13px;border-left:4px solid #d7a023;background:#fff9e9;font-size:11px}.history{width:100%;margin-top:18px;border-collapse:collapse;font-size:10px}.history caption{text-align:left;margin-bottom:8px;font:700 16px Georgia,serif}.history th,.history td{padding:8px;border:1px solid #d8e0dc;text-align:left}.history th{background:#edf3ef}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:35px;margin-top:45px}.signature{padding-top:35px;border-bottom:1px solid #35483f;text-align:center;font-size:10px}.meta{margin-top:28px;color:#6a786f;font-size:9px;line-height:1.5}.toolbar{position:fixed;right:20px;bottom:20px;display:flex;gap:8px}.toolbar button{border:0;padding:11px 16px;background:#144d38;color:#fff;font-weight:800;cursor:pointer}.toolbar .secondary{background:#fff;color:#144d38;border:1px solid #144d38}@media print{body{background:#fff}.sheet{width:auto;min-height:auto;margin:0;padding:9mm;box-shadow:none}.toolbar{display:none}}@page{size:letter;margin:7mm}
-    </style></head><body><main class="sheet"><header class="top"><div><div class="brand">ABICORP · RECURSOS HUMANOS</div><small>Control de vacaciones, permisos e incapacidades</small></div><div class="folio"><small>Folio</small><strong>${escapeHtml(request.folio || "—")}</strong><div class="status">${escapeHtml(hrLeaveStatusLabel(request.status))}</div></div></header><section class="title"><span class="label">Comprobante de solicitud</span><h1>${escapeHtml(hrLeaveLabel(request.leave_type))}</h1><p>Este documento conserva los datos registrados y su historial de autorización.</p></section><section class="grid"><div><span class="label">Colaborador</span><strong>${escapeHtml(request.employee_name || "—")}</strong></div><div><span class="label">ID laboral</span><strong>${escapeHtml(request.employee_number || "—")}</strong></div><div><span class="label">Empresa / centro</span><strong>${escapeHtml([request.company_name, request.work_center_name].filter(Boolean).join(" · ") || "Sin asignar")}</strong></div><div><span class="label">Departamento / área</span><strong>${escapeHtml([request.department_name, request.area_name].filter(Boolean).join(" · ") || "Sin asignar")}</strong></div><div><span class="label">Puesto</span><strong>${escapeHtml(request.position_name || "Sin asignar")}</strong></div><div><span class="label">Subtipo</span><strong>${escapeHtml(request.subtype || "Sin subtipo")}</strong></div><div><span class="label">Periodo</span><strong>${formatDateOnly(request.start_date)} — ${formatDateOnly(request.end_date)}</strong></div><div><span class="label">Días hábiles</span><strong>${inventoryNumber(request.working_days || request.total_days)} día(s)</strong></div></section><section class="reason"><span class="label">Motivo registrado</span><p>${escapeHtml(request.reason || "—")}</p></section>${balanceRows}${request.status === "submitted" ? '<div class="notice"><strong>Importante:</strong> el saldo mostrado es una proyección. El descuento se aplica cuando Recursos Humanos autoriza la solicitud.</div>' : ""}<table class="history"><caption>Historial de la solicitud</caption><thead><tr><th>Fecha</th><th>Responsable</th><th>Estado</th><th>Observación</th></tr></thead><tbody>${history || '<tr><td colspan="4">Sin movimientos registrados.</td></tr>'}</tbody></table><section class="signatures"><div class="signature">Firma del colaborador</div><div class="signature">Administrador de Recursos Humanos</div></section><p class="meta">Documento emitido el ${escapeHtml(new Intl.DateTimeFormat("es-MX", { dateStyle: "long", timeStyle: "short" }).format(new Date()))}. Reimpresión registrada: ${Number(receipt.printCount || 0)}. Conserva el folio para cualquier aclaración.</p></main><div class="toolbar"><button class="secondary" data-print-close>Cerrar</button><button data-print-action>Imprimir / Guardar PDF</button></div></body></html>`;
+    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(request.folio || "Solicitud")}</title><link rel="stylesheet" href="${stylesheetUrl}"></head><body><main class="receipt-sheet">
+      <header class="receipt-header"><div class="receipt-brand"><img src="${logoUrl}" alt=""><div><strong>ABICORP</strong><span>ERP MODULAR · RECURSOS HUMANOS</span></div></div><div class="receipt-reference"><span>Folio de control</span><strong>${escapeHtml(request.folio || "—")}</strong><b>${escapeHtml(hrLeaveStatusLabel(request.status))}</b></div></header>
+      <section class="receipt-hero"><div><span>COMPROBANTE DE SOLICITUD</span><h1>${escapeHtml(hrLeaveLabel(request.leave_type))}</h1><p>Registro oficial del proceso de vacaciones, permisos e incapacidades.</p></div><aside><span>Días hábiles</span><strong>${inventoryNumber(request.working_days || request.total_days)}</strong><small>${formatDateOnly(request.start_date)} — ${formatDateOnly(request.end_date)}</small></aside></section>
+      <section class="receipt-section"><header><span>01</span><div><strong>Identidad laboral</strong><small>Colaborador y adscripción organizacional</small></div></header><div class="receipt-grid"><div><span>Colaborador</span><strong>${escapeHtml(request.employee_name || "—")}</strong></div><div><span>ID laboral</span><strong>${escapeHtml(request.employee_number || "—")}</strong></div><div><span>Empresa y centro</span><strong>${escapeHtml([request.company_name, request.work_center_name].filter(Boolean).join(" · ") || "Sin asignar")}</strong></div><div><span>Departamento y área</span><strong>${escapeHtml([request.department_name, request.area_name].filter(Boolean).join(" · ") || "Sin asignar")}</strong></div><div><span>Puesto</span><strong>${escapeHtml(request.position_name || "Sin asignar")}</strong></div><div><span>Tipo de solicitud</span><strong>${escapeHtml(request.subtype || "Sin subtipo")}</strong></div></div></section>
+      <section class="receipt-section"><header><span>02</span><div><strong>Detalle de la solicitud</strong><small>Periodo y motivo capturado</small></div></header><div class="receipt-period"><div><span>Fecha inicial</span><strong>${formatDateOnly(request.start_date)}</strong></div><i>→</i><div><span>Fecha final</span><strong>${formatDateOnly(request.end_date)}</strong></div><div><span>Días hábiles</span><strong>${inventoryNumber(request.working_days || request.total_days)} día(s)</strong></div></div><div class="receipt-reason"><span>Motivo registrado</span><p>${escapeHtml(request.reason || "—")}</p></div>${balanceRows}${request.status === "submitted" ? '<div class="receipt-notice"><strong>Saldo provisional</strong><span>El saldo mostrado es una proyección. El movimiento definitivo se aplicará cuando Recursos Humanos autorice la solicitud.</span></div>' : ""}</section>
+      <section class="receipt-section receipt-history-section"><header><span>03</span><div><strong>Historial de autorización</strong><small>Trazabilidad conservada por el sistema</small></div></header><div class="receipt-table-wrap"><table class="receipt-history"><thead><tr><th>Fecha</th><th>Responsable</th><th>Estado</th><th>Observación</th></tr></thead><tbody>${history || '<tr><td colspan="4">Sin movimientos registrados.</td></tr>'}</tbody></table></div></section>
+      <section class="receipt-signatures"><div><span></span><strong>Firma del colaborador</strong><small>${escapeHtml(request.employee_name || "")}</small></div><div><span></span><strong>Administrador de Recursos Humanos</strong><small>Validación y sello</small></div></section>
+      <footer class="receipt-footer"><p>Emitido el ${issuedAt} · Impresión registrada: ${Number(receipt.printCount || 0)}</p><p>Documento generado por ABICORP ERP. Conserva el folio para cualquier aclaración.</p></footer>
+    </main><nav class="receipt-toolbar" aria-label="Acciones del comprobante"><button class="secondary" data-print-close>Cerrar</button><button data-print-action>Imprimir / Guardar PDF</button></nav></body></html>`;
   }
   
   function showHrLeaveConfirmation(result) {
@@ -866,7 +1057,9 @@ export function createHrModule(context) {
   async function printHrLeaveReceipt(id) {
     const printWindow = window.open("", "_blank", "width=980,height=820");
     if (!printWindow) return toast("Permite las ventanas emergentes para imprimir el comprobante.", "error");
-    printWindow.document.write('<!doctype html><title>Preparando comprobante</title><p style="font:16px Arial;padding:30px">Preparando comprobante y registrando la emisión…</p>');
+    const stylesheetUrl = escapeAttribute(new URL("./hr-receipt.css?v=20260826-01", window.location.href).href);
+    printWindow.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Preparando comprobante</title><link rel="stylesheet" href="' + stylesheetUrl + '"></head><body class="receipt-loading-page"><main class="receipt-loading"><span></span><strong>Preparando comprobante</strong><p>Registrando la emisión y organizando el documento…</p></main></body></html>');
+    printWindow.document.close();
     try {
       const { receipt } = await api("/api/hr/leaves/" + id + "/print", { method: "POST", body: {} });
       printWindow.document.open();
@@ -959,8 +1152,8 @@ export function createHrModule(context) {
     }];
   }
   
-  function hrCatalogRecord(row, type, summary, linked, editable = true) {
-    return '<li class="hr-catalog-record"><div><strong>' + escapeHtml(row.name) + '</strong><small>' + escapeHtml(summary) + '</small></div><div class="hr-catalog-record-meta"><span>' + escapeHtml(row.code) + '</span><small>' + linked + ' colaborador(es)</small>' + (editable ? '<button type="button" data-edit-hr-catalog="' + type + '" data-record-id="' + row.id + '">Editar</button>' : "") + '</div></li>';
+  function hrCatalogRecord(row, type, summary, linked, editable = true, extraActions = "") {
+    return '<li class="hr-catalog-record"><div><strong>' + escapeHtml(row.name) + '</strong><small>' + escapeHtml(summary) + '</small></div><div class="hr-catalog-record-meta"><span>' + escapeHtml(row.code) + '</span><small>' + linked + ' colaborador(es)</small>' + extraActions + (editable ? '<button type="button" data-edit-hr-catalog="' + type + '" data-record-id="' + row.id + '">Editar</button>' : "") + '</div></li>';
   }
   
   async function openHrCatalogsModal(section = "areas", confirmation = "", editingId = null) {
@@ -977,7 +1170,7 @@ export function createHrModule(context) {
     const canManageAreas = hasPermission("areas.manage") || hasPermission("hr.approve");
     const sections = {
       areas: { number: "01", label: "Áreas", hint: "Estructura funcional del personal", records: areas },
-      positions: { number: "02", label: "Puestos", hint: "Funciones y responsabilidades", records: jobPositions },
+      positions: { number: "02", label: "Puestos", hint: "Descriptivos y perfiles de puesto", records: jobPositions },
       shifts: { number: "03", label: "Turnos y horarios", hint: "Jornadas y calendarios", records: workShifts },
       vacations: { number: "04", label: "Planes de vacaciones", hint: "Días según antigüedad", records: vacationPlans },
       holidays: { number: "05", label: "Fechas feriadas", hint: "Días no laborables del calendario", records: policyData.holidays },
@@ -1009,9 +1202,10 @@ export function createHrModule(context) {
         ? '<form id="hr-area-form" class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR ÁREA" : "NUEVA ÁREA") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar área") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><div class="form-grid compact"><label>Código<input name="code" maxlength="30" pattern="[A-Za-z0-9_-]{2,30}" required placeholder="Ej. ALM" value="' + escapeAttribute(editing?.code || "") + '" ' + (editing ? "disabled" : "") + ' /></label><label>Nombre del área<input name="name" maxlength="120" required placeholder="Ej. Almacén" value="' + escapeAttribute(editing?.name || "") + '" /></label>' + (editing ? '<label>Estado<select name="isActive"><option value="true" ' + (editing.is_active ? "selected" : "") + '>Activa</option><option value="false" ' + (!editing.is_active ? "selected" : "") + '>Inactiva</option></select></label>' : "") + '</div><label>Descripción<textarea name="description" rows="3" maxlength="500">' + escapeHtml(editing?.description || "") + '</textarea></label><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Agregar área") + "</button></form>"
         : '<div class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>ÁREAS DE TRABAJO</span><h3>Consulta de estructura</h3></div></div><p class="muted">La creación y modificación de áreas está reservada al Administrador de RH.</p></div>';
     } else if (section === "positions") {
-      rows = jobPositions.map((row) => hrCatalogRecord(row, "positions", row.description || "Sin descripción",
-        hrCatalogUsage("position_id", row.id))).join("");
-      form = '<form id="hr-position-form" class="hr-catalog-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR PUESTO" : "NUEVO PUESTO") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar puesto") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><label>Nombre del puesto<input name="name" maxlength="120" required placeholder="Ej. Supervisor de producción" value="' + escapeAttribute(editing?.name || "") + '" /></label><label>Descripción<textarea name="description" rows="3" maxlength="500">' + escapeHtml(editing?.description || "") + '</textarea></label><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar cambios" : "＋ Agregar puesto") + '</button></form>';
+      rows = jobPositions.map((row) => hrCatalogRecord(row, "positions", row.description || "Sin descriptivo",
+        hrCatalogUsage("position_id", row.id), true,
+        '<button type="button" data-print-catalog-position="' + row.id + '" data-position-document="description">Descriptivo</button><button type="button" data-print-catalog-position="' + row.id + '" data-position-document="profile">Perfil</button>')).join("");
+      form = '<form id="hr-position-form" class="hr-catalog-editor hr-position-editor"><div class="hr-catalog-editor-head"><div><span>' + (editing ? "EDITAR PUESTO" : "NUEVO PUESTO") + '</span><h3>' + (editing ? escapeHtml(editing.name) : "Agregar puesto") + '</h3></div>' + (editing ? '<button type="button" data-cancel-hr-catalog-edit>Cancelar edición</button>' : "") + '</div><label>Nombre del puesto<input name="name" maxlength="120" required placeholder="Ej. Analista de Recursos Humanos" value="' + escapeAttribute(editing?.name || "") + '" /></label><section class="hr-position-editor-block descriptive"><header><span>DESCRIPTIVO DE PUESTO</span><strong>¿Qué hace este puesto?</strong><small>Funciones, tareas, objetivos, autoridad y relaciones de trabajo.</small></header><label>Funciones y responsabilidades<textarea name="description" rows="7" maxlength="4000" placeholder="Ej. Elaborar contratos laborales. Administrar expedientes. Reportar a la Gerencia de RH.">' + escapeHtml(editing?.description || "") + '</textarea></label></section><section class="hr-position-editor-block profile"><header><span>PERFIL DE PUESTO</span><strong>¿Quién puede desempeñar este puesto?</strong><small>Requisitos y competencias de la persona que lo ocupará.</small></header><div class="form-grid"><label>Estudios<textarea name="profileEducation" rows="3" maxlength="2000" placeholder="Ej. Licenciatura en Administración, Psicología o afín.">' + escapeHtml(editing?.profile_education || "") + '</textarea></label><label>Experiencia<textarea name="profileExperience" rows="3" maxlength="2000" placeholder="Ej. Mínimo 2 años en Recursos Humanos.">' + escapeHtml(editing?.profile_experience || "") + '</textarea></label><label>Conocimientos<textarea name="profileKnowledge" rows="3" maxlength="2000" placeholder="Ej. Excel y sistemas de nómina.">' + escapeHtml(editing?.profile_knowledge || "") + '</textarea></label><label>Habilidades<textarea name="profileSkills" rows="3" maxlength="2000" placeholder="Ej. Comunicación, organización y trabajo en equipo.">' + escapeHtml(editing?.profile_skills || "") + '</textarea></label><label class="span-two">Competencias<textarea name="profileCompetencies" rows="3" maxlength="2000" placeholder="Ej. Orientación a resultados y atención al detalle.">' + escapeHtml(editing?.profile_competencies || "") + '</textarea></label></div></section><p class="form-error hidden"></p><button class="button primary" type="submit">' + (editing ? "Guardar descriptivo y perfil" : "＋ Agregar puesto") + '</button></form>';
     } else if (section === "vacations") {
       rows = vacationPlans.map((row) => hrCatalogRecord(row, "vacations",
         inventoryNumber(row.annual_days) + " días · " + hrVacationSeniority(row),
@@ -1032,6 +1226,10 @@ export function createHrModule(context) {
     );
     $$("[data-edit-hr-catalog]").forEach((button) => button.onclick = () =>
       openHrCatalogsModal(button.dataset.editHrCatalog, "", Number(button.dataset.recordId))
+    );
+    $$("[data-print-catalog-position]").forEach((button) => button.onclick = () =>
+      printHrPositionProfile(jobPositions.find((row) => row.id === Number(button.dataset.printCatalogPosition)),
+        null, button.dataset.positionDocument)
     );
     $("[data-cancel-hr-catalog-edit]")?.addEventListener("click", () => openHrCatalogsModal(section));
   
@@ -1168,9 +1366,19 @@ export function createHrModule(context) {
     const person = state.hrControl?.people?.find((row) => row.id === Number(employeeId));
     if (!person) return toast("No se encontró el expediente del trabajador.", "error");
     let portalAccess = null;
-    try { portalAccess = (await api("/api/hr/portal/employees/" + person.id, { cache: false })).access; }
-    catch (error) { toast("No fue posible consultar el acceso del colaborador: " + error.message, "error"); }
+    let documentData = { documents: [], documentTypes: [] };
+    const [portalResult, documentResult] = await Promise.allSettled([
+      api("/api/hr/portal/employees/" + person.id, { cache: false }),
+      hasPermission("documents.view")
+        ? api("/api/documents?employeeId=" + encodeURIComponent(person.id), { cache: false })
+        : Promise.resolve(documentData),
+    ]);
+    if (portalResult.status === "fulfilled") portalAccess = portalResult.value.access;
+    else toast("No fue posible consultar el acceso del colaborador: " + portalResult.reason.message, "error");
+    if (documentResult.status === "fulfilled") documentData = documentResult.value;
+    else toast("No fue posible consultar los documentos: " + documentResult.reason.message, "error");
     const o = state.hrOptions || {};
+    const assignedPosition = (o.jobPositions || []).find((row) => Number(row.id) === Number(person.position_id));
     const selectedOptions = (records, selectedId, emptyLabel, label) => '<option value="">' + emptyLabel + '</option>' + records.map((row) => '<option value="' + row.id + '" ' + (row.id === Number(selectedId) ? "selected" : "") + '>' + escapeHtml(label(row)) + '</option>').join("");
     const areas = selectedOptions(o.areas || [], person.area_id, "Sin área", (row) => row.code + " · " + row.name);
     const positions = selectedOptions(o.jobPositions || [], person.position_id, "Sin puesto asignado", (row) => row.name);
@@ -1191,6 +1399,8 @@ export function createHrModule(context) {
     const profileSections = $$(".hr-registration-section", card);
     profileSections.at(-1)?.insertAdjacentHTML("beforebegin", hrEmployeePortalAccessMarkup(person, portalAccess));
     $(".hr-registration-fields", card).insertAdjacentHTML("beforeend", hrDigitalFileMarkup(person, o));
+    $(".hr-registration-fields", card).insertAdjacentHTML("beforeend", hrPositionProfileMarkup(person, assignedPosition));
+    if (hasPermission("documents.view")) $(".hr-registration-fields", card).insertAdjacentHTML("beforeend", hrEmployeeDocumentsMarkup(person, documentData));
     if (person.status !== "inactive") $('[name="status"] option[value="inactive"]', card).disabled = true;
     $('[name="notes"]', card).closest("label").insertAdjacentHTML("beforebegin", '<label>Parentesco<input name="emergencyRelationship" maxlength="80" value="' + escapeAttribute(person.emergency_relationship || "") + '" /></label>');
     $(".hr-labor-grid", card).insertAdjacentHTML("beforeend", hrEmploymentDetailsMarkup(person));
@@ -1202,6 +1412,8 @@ export function createHrModule(context) {
     bindHrEmploymentRules($("#hr-edit-form"), o.vacationPlans || [], o.workShifts || []);
     bindHrDigitalFileRules($("#hr-edit-form"));
     bindHrEmployeePortalProfile(person);
+    bindHrPositionProfile(person, assignedPosition);
+    bindHrEmployeeDocuments(person);
     photoInput.onchange = () => {
       const file = photoInput.files?.[0];
       if (!file) return;
@@ -1424,7 +1636,7 @@ export function createHrModule(context) {
         box.classList.remove("hidden");
       }
     };
-    entityDialog.showModal();
+    if (!entityDialog.open) entityDialog.showModal();
   }
 
   async function openCatalogs(section = "areas") {

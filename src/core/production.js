@@ -22,13 +22,15 @@ export function options(db) {
     locations: db.prepare(`SELECT id, warehouse_id, code, name FROM inventory_locations WHERE is_active = 1 ORDER BY name`).all(),
     lots: db.prepare(`SELECT id, item_id, lot_number FROM inventory_lots WHERE status IN ('active', 'quarantine') ORDER BY id DESC`).all(),
     boms: db.prepare(`SELECT b.id, b.folio, b.product_id, b.version, b.output_quantity, b.status, b.is_phantom,
-      i.sku, i.name AS product_name, COUNT(bl.id) AS line_count
+      i.sku, i.name AS product_name,
+      (SELECT COUNT(*) FROM production_bom_lines bl WHERE bl.bom_id = b.id) AS line_count
       FROM production_boms b JOIN items i ON i.id = b.product_id
-      LEFT JOIN production_bom_lines bl ON bl.bom_id = b.id GROUP BY b.id ORDER BY b.id DESC`).all(),
+      ORDER BY b.id DESC`).all(),
     routes: db.prepare(`SELECT r.id, r.folio, r.product_id, r.version, r.status, i.sku, i.name AS product_name,
-      COUNT(op.id) AS operation_count, COALESCE(SUM(op.setup_minutes + op.run_minutes), 0) AS standard_minutes
+      (SELECT COUNT(*) FROM production_route_operations op WHERE op.route_id = r.id) AS operation_count,
+      COALESCE((SELECT SUM(op.setup_minutes + op.run_minutes) FROM production_route_operations op WHERE op.route_id = r.id), 0) AS standard_minutes
       FROM production_routes r JOIN items i ON i.id = r.product_id
-      LEFT JOIN production_route_operations op ON op.route_id = r.id GROUP BY r.id ORDER BY r.id DESC`).all(),
+      ORDER BY r.id DESC`).all(),
     demands: listDemands(db),
     orders: db.prepare(`SELECT id, folio, item_id, planned_quantity, status FROM production_orders
       WHERE status NOT IN ('closed', 'cancelled') ORDER BY id DESC`).all(),
@@ -38,14 +40,16 @@ export function options(db) {
 export function control(db) {
   const orders = listOrders(db);
   const demands = listDemands(db);
-  const boms = db.prepare(`SELECT b.*, i.sku, i.name AS product_name, COUNT(bl.id) AS line_count,
-    SUM(CASE WHEN bl.substitute_item_id IS NOT NULL THEN 1 ELSE 0 END) AS substitute_count
+  const boms = db.prepare(`SELECT b.*, i.sku, i.name AS product_name,
+    (SELECT COUNT(*) FROM production_bom_lines bl WHERE bl.bom_id = b.id) AS line_count,
+    (SELECT COUNT(*) FROM production_bom_lines bl WHERE bl.bom_id = b.id AND bl.substitute_item_id IS NOT NULL) AS substitute_count
     FROM production_boms b JOIN items i ON i.id = b.product_id
-    LEFT JOIN production_bom_lines bl ON bl.bom_id = b.id GROUP BY b.id ORDER BY b.id DESC`).all();
-  const routes = db.prepare(`SELECT r.*, i.sku, i.name AS product_name, COUNT(op.id) AS operation_count,
-    COALESCE(SUM(op.setup_minutes + op.run_minutes), 0) AS standard_minutes
+    ORDER BY b.id DESC`).all();
+  const routes = db.prepare(`SELECT r.*, i.sku, i.name AS product_name,
+    (SELECT COUNT(*) FROM production_route_operations op WHERE op.route_id = r.id) AS operation_count,
+    COALESCE((SELECT SUM(op.setup_minutes + op.run_minutes) FROM production_route_operations op WHERE op.route_id = r.id), 0) AS standard_minutes
     FROM production_routes r JOIN items i ON i.id = r.product_id
-    LEFT JOIN production_route_operations op ON op.route_id = r.id GROUP BY r.id ORDER BY r.id DESC`).all();
+    ORDER BY r.id DESC`).all();
   const events = db.prepare(`SELECT e.*, o.folio AS order_folio, i.sku, i.name AS item_name,
     op.name AS operation_name, u.full_name AS created_by_name
     FROM production_events e JOIN production_orders o ON o.id = e.order_id
@@ -308,17 +312,16 @@ function listOrders(db) {
   return db.prepare(`SELECT o.*, i.sku, i.name AS item_name, i.item_type, u.symbol AS unit_symbol,
     w.code AS warehouse_code, w.name AS warehouse_name, p.folio AS parent_folio,
     so.folio AS sales_order_folio, COALESCE(c.trade_name, c.legal_name) AS sales_customer_name,
-    COUNT(DISTINCT child.id) AS child_count,
+    (SELECT COUNT(*) FROM production_orders child WHERE child.parent_order_id = o.id) AS child_count,
     (SELECT COUNT(*) FROM production_order_operations x WHERE x.order_id = o.id AND x.status = 'completed') AS completed_operations,
     (SELECT COUNT(*) FROM production_order_operations x WHERE x.order_id = o.id) AS operation_count,
     (SELECT SUM(required_quantity) FROM production_order_materials m WHERE m.order_id = o.id) AS required_materials,
     (SELECT SUM(consumed_quantity) FROM production_order_materials m WHERE m.order_id = o.id) AS consumed_materials
     FROM production_orders o JOIN items i ON i.id = o.item_id
     LEFT JOIN units_of_measure u ON u.id = i.unit_id JOIN warehouses w ON w.id = o.warehouse_id
-    LEFT JOIN production_orders p ON p.id = o.parent_order_id LEFT JOIN production_orders child ON child.parent_order_id = o.id
+    LEFT JOIN production_orders p ON p.id = o.parent_order_id
     LEFT JOIN sales_documents so ON so.id = o.sales_order_id LEFT JOIN customers c ON c.id = so.customer_id
-    LEFT JOIN production_order_operations op ON op.order_id = o.id
-    GROUP BY o.id ORDER BY o.id DESC`).all();
+    ORDER BY o.id DESC`).all();
 }
 
 function listDemands(db) {

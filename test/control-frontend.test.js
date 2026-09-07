@@ -29,8 +29,74 @@ test("la cuenta ADMIN es de solo lectura en interfaz y servidor", () => {
 });
 
 test("el Centro de Gestion versiona la interfaz corregida", () => {
-  assert.match(html, /styles\.css\?v=20260807-21/);
-  assert.match(html, /app\.js\?v=20260807-21/);
+  assert.match(html, /styles\.css\?v=20260826-06/);
+  assert.match(html, /app\.js\?v=20260826-06/);
+});
+
+test("el Centro de Gestion puede crear una empresa demo precargada", () => {
+  assert.match(html, /id="load-demo-company-button"/);
+  assert.match(html, /id="demo-company-dialog"/);
+  assert.match(html, /id="demo-ready-dialog"/);
+  assert.match(html, /Nova Manufactura Demo/);
+  assert.match(html, /name="durationHours"[^>]+value="12"/);
+  assert.match(html, /name="durationHours"[^>]+value="24"/);
+  assert.match(html, /name="durationHours"[^>]+value="72"/);
+  assert.doesNotMatch(html, /name="planId"[^>]*>Usar plan activo o crear plan demo/);
+  assert.match(source, /function openDemoCompanyDialog/);
+  assert.match(source, /function saveDemoCompany/);
+  assert.match(source, /api\("\/api\/control\/demo-company"/);
+  assert.match(backend, /seedDemoCompany/);
+  assert.match(backend, /control\.demo_company_created/);
+});
+
+test("el Centro de Gestion usa perfiles globales y conserva permisos sensibles", () => {
+  assert.match(html, /<option value="manager">Administrador<\/option>/);
+  assert.match(html, /<option value="hr">Auxiliar<\/option>/);
+  assert.match(html, /<option value="payroll">Auditor<\/option>/);
+  assert.doesNotMatch(html, /name="employeeId"|name="accessScope"|name="companyIds"|name="workCenterIds"/);
+  assert.doesNotMatch(html, /Trabajador vinculado|Empresas autorizadas|Centros autorizados/);
+  assert.match(html, /name="canViewSalary"/);
+  assert.match(html, /name="canViewCfdi"/);
+  assert.match(html, /name="canViewMedical"/);
+  assert.doesNotMatch(source, /refreshLaborAccessControls|selectedNumbers/);
+  assert.match(backend, /\["manager", "hr", "payroll"\]/);
+  assert.match(backend, /accessScope: "company"/);
+  assert.doesNotMatch(backend, /requieren alcance por empresa o centro de trabajo/);
+  assert.doesNotMatch(backend, /Selecciona al menos una empresa autorizada/);
+  assert.doesNotMatch(backend, /Selecciona al menos un centro de trabajo autorizado/);
+});
+
+test("el Centro de Gestion administra planes y suscripciones sin exponer cobros", () => {
+  assert.match(html, /data-control-view="subscriptions"/);
+  assert.match(html, /id="subscription-form"/);
+  assert.match(html, /id="plan-form"/);
+  assert.match(html, /id="plans-panel"[^>]*hidden/);
+  assert.match(html, /id="manage-plans-button"/);
+  assert.match(html, /id="close-plans-button"/);
+  assert.doesNotMatch(html, /id="new-subscription-button"/);
+  assert.match(html, /class="form-section new-company-subscription"/);
+  assert.match(html, /name="planId" required/);
+  assert.match(html, /<h3>Seleccionar Plan<\/h3>/);
+  assert.doesNotMatch(html, /Suscripción inicial|name="subscriptionStartsOn"|name="subscriptionNextBillingOn"|name="subscriptionStatus"|REQUERIDA/);
+  assert.doesNotMatch(html, /id="charge-form"|id="collection-form"|Cargos y cobros|Cobros registrados|Nuevo cargo/);
+  assert.match(source, /function renderSubscriptionWorkspace/);
+  assert.match(source, /function renderPlans/);
+  assert.match(source, /function setPlanManagerVisible/);
+  assert.match(source, /function openPlanDialog/);
+  assert.doesNotMatch(html, /Código automático|name="code"/);
+  assert.doesNotMatch(html, /company-code-preview|ID de empresa|Automático al guardar/);
+  assert.doesNotMatch(source, /automaticPlanCode|form\.elements\.code/);
+  assert.match(source, /body\.code = automaticCompanyRequestCode\(\)/);
+  assert.match(backend, /function nextSubscriptionPlanCode/);
+  assert.match(backend, /function nextCompanyCode/);
+  assert.match(backend, /function automaticSubscriptionSchedule/);
+  assert.match(source, /body\.subscription = \{/);
+  assert.match(source, /planId: Number\(data\.get\("planId"\)\)/);
+  assert.match(source, /function armActionButton/);
+  assert.doesNotMatch(source, /openChargeDialog|saveSubscriptionCollection|data-collect-charge/);
+  assert.match(backend, /CREATE TABLE IF NOT EXISTS company_subscriptions|company_subscriptions/);
+  assert.match(backend, /CREATE TABLE IF NOT EXISTS subscription_plans|subscription_plans/);
+  assert.match(backend, /cleanPlanAssignment\(body\.subscription\)/);
 });
 
 test("la eliminacion de empresas exige confirmacion escrita y comunica su impacto", () => {
@@ -52,4 +118,35 @@ test("el Centro de Gestion organiza los modulos por paquetes operativos", () => 
   assert.match(source, /Adicionales/);
   assert.match(source, /function moduleAccessGroups/);
   assert.match(source, /module-group-grid/);
+});
+
+test("el Centro de Gestion ofrece presets funcionales y conserva la personalizacion manual", () => {
+  assert.match(html, /id="module-preset-selector"/);
+  assert.match(html, /id="module-preset-summary"/);
+  assert.match(html, /name="modulePreset"[^>]*value="custom"/);
+  assert.match(source, /label: "Administración"/);
+  assert.match(source, /label: "Recursos Humanos"/);
+  assert.match(source, /label: "Producción"/);
+  assert.match(source, /label: "Mantenimiento"/);
+  assert.match(source, /label: "Gestión"/);
+  assert.match(source, /label: "Ambiental"/);
+  assert.match(source, /label: "Personalizada"/);
+  assert.match(source, /function applyModulePreset/);
+  assert.match(source, /function findMatchingModulePreset/);
+  assert.match(source, /function applyIdentityModuleLevelPolicy/);
+  assert.match(source, /identityType === "manager"/);
+  assert.match(source, /identityType === "payroll"/);
+  assert.match(source, /option\.level >= 2 && option\.level <= 3/);
+  assert.match(source, /setActiveModulePreset\("custom"\)/);
+  assert.match(backend, /function normalizeUserModuleLevels/);
+});
+
+test("el modal de usuarios usa un solo desplazamiento y conserva visibles sus acciones", () => {
+  assert.match(html, /id="user-form"[^>]*class="modal-card"[^]*class="modal-scroll-content"/);
+  assert.match(html, /class="modal-scroll-content"[^]*class="modal-actions"/);
+  const styles = readFileSync(new URL("../control/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /#user-dialog \{[^}]*height:/);
+  assert.match(styles, /#user-form \{[^}]*display: flex;[^}]*overflow: hidden/);
+  assert.match(styles, /#user-form \.modal-scroll-content \{[^}]*overflow-y: auto/);
+  assert.match(styles, /#user-form > \.modal-actions \{[^}]*flex: 0 0 auto/);
 });

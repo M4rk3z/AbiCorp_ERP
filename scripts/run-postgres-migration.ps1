@@ -1,5 +1,7 @@
 param(
   [string]$Source,
+  [ValidateSet("production", "test")]
+  [string]$EnvironmentName = "production",
   [switch]$Confirm,
   [switch]$Replace
 )
@@ -59,10 +61,18 @@ $previousProvider = [Environment]::GetEnvironmentVariable("DATABASE_PROVIDER", "
 $secureUrl = $null
 $plainUrl = $previousDatabaseUrl
 $bstr = [IntPtr]::Zero
+$secureConfigFile = if ($EnvironmentName -eq "test") { "postgres-test-url.secure" } else { "postgres-external-url.secure" }
+$secureConfigPath = Join-Path $projectRoot "config-local\$secureConfigFile"
 
 try {
   if (-not $plainUrl) {
-    $secureUrl = Read-Host "Pega la External Database URL de Render" -AsSecureString
+    if (Test-Path -LiteralPath $secureConfigPath) {
+      $encryptedUrl = (Get-Content -LiteralPath $secureConfigPath -Raw -Encoding utf8).Trim()
+      $secureUrl = ConvertTo-SecureString -String $encryptedUrl -ErrorAction Stop
+      Write-Host "Configuracion PostgreSQL cifrada cargada para $EnvironmentName."
+    } else {
+      $secureUrl = Read-Host "Pega la External Database URL de Render" -AsSecureString
+    }
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureUrl)
     $plainUrl = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
   }

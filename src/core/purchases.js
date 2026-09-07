@@ -42,39 +42,47 @@ export function options(db) {
 
 export function control(db) {
   const requests = db.prepare(`SELECT r.*, u.full_name AS requester_name, a.full_name AS approved_by_name,
-    cc.code AS cost_center_code, cc.name AS cost_center_name, COUNT(l.id) AS line_count,
-    COALESCE(SUM(l.quantity), 0) AS total_quantity FROM purchase_requests r
+    cc.code AS cost_center_code, cc.name AS cost_center_name,
+    (SELECT COUNT(*) FROM purchase_request_lines l WHERE l.request_id = r.id) AS line_count,
+    COALESCE((SELECT SUM(l.quantity) FROM purchase_request_lines l WHERE l.request_id = r.id), 0) AS total_quantity
+    FROM purchase_requests r
     JOIN users u ON u.id = r.requester_id LEFT JOIN users a ON a.id = r.approved_by
     LEFT JOIN finance_cost_centers cc ON cc.id = r.cost_center_id
-    LEFT JOIN purchase_request_lines l ON l.request_id = r.id GROUP BY r.id ORDER BY r.id DESC`).all();
+    ORDER BY r.id DESC`).all();
   const comparisons = db.prepare(`SELECT c.*, r.folio AS request_folio, s.code AS selected_supplier_code,
-    COALESCE(s.trade_name, s.legal_name) AS selected_supplier_name, COUNT(o.id) AS offer_count,
-    MIN(o.total_amount) AS lowest_amount, MAX(o.total_amount) AS highest_amount
+    COALESCE(s.trade_name, s.legal_name) AS selected_supplier_name,
+    (SELECT COUNT(*) FROM purchase_comparison_offers x WHERE x.comparison_id = c.id) AS offer_count,
+    (SELECT MIN(x.total_amount) FROM purchase_comparison_offers x WHERE x.comparison_id = c.id) AS lowest_amount,
+    (SELECT MAX(x.total_amount) FROM purchase_comparison_offers x WHERE x.comparison_id = c.id) AS highest_amount
     FROM purchase_comparisons c JOIN purchase_requests r ON r.id = c.request_id
     LEFT JOIN suppliers s ON s.id = c.selected_supplier_id
-    LEFT JOIN purchase_comparison_offers o ON o.comparison_id = c.id GROUP BY c.id ORDER BY c.id DESC`).all();
+    ORDER BY c.id DESC`).all();
   const orders = db.prepare(`SELECT o.*, r.folio AS request_folio, c.folio AS comparison_folio,
     s.code AS supplier_code, COALESCE(s.trade_name, s.legal_name) AS supplier_name,
-    cur.code AS currency_code, cc.code AS cost_center_code, COUNT(l.id) AS line_count,
-    COALESCE(SUM(l.quantity), 0) AS ordered_quantity, COALESCE(SUM(l.received_quantity), 0) AS received_quantity,
-    COALESCE(SUM(l.returned_quantity), 0) AS returned_quantity
+    cur.code AS currency_code, cc.code AS cost_center_code,
+    (SELECT COUNT(*) FROM purchase_order_lines l WHERE l.order_id = o.id) AS line_count,
+    COALESCE((SELECT SUM(l.quantity) FROM purchase_order_lines l WHERE l.order_id = o.id), 0) AS ordered_quantity,
+    COALESCE((SELECT SUM(l.received_quantity) FROM purchase_order_lines l WHERE l.order_id = o.id), 0) AS received_quantity,
+    COALESCE((SELECT SUM(l.returned_quantity) FROM purchase_order_lines l WHERE l.order_id = o.id), 0) AS returned_quantity
     FROM purchase_orders o JOIN purchase_requests r ON r.id = o.request_id
     LEFT JOIN purchase_comparisons c ON c.id = o.comparison_id JOIN suppliers s ON s.id = o.supplier_id
     JOIN currencies cur ON cur.id = o.currency_id LEFT JOIN finance_cost_centers cc ON cc.id = o.cost_center_id
-    LEFT JOIN purchase_order_lines l ON l.order_id = o.id GROUP BY o.id ORDER BY o.id DESC`).all();
+    ORDER BY o.id DESC`).all();
   const receipts = db.prepare(`SELECT r.*, o.folio AS order_folio, s.code AS supplier_code,
     COALESCE(s.trade_name, s.legal_name) AS supplier_name, w.code AS warehouse_code, w.name AS warehouse_name,
-    COUNT(l.id) AS line_count, COALESCE(SUM(l.quantity), 0) AS total_quantity
+    (SELECT COUNT(*) FROM purchase_receipt_lines l WHERE l.receipt_id = r.id) AS line_count,
+    COALESCE((SELECT SUM(l.quantity) FROM purchase_receipt_lines l WHERE l.receipt_id = r.id), 0) AS total_quantity
     FROM purchase_receipts r JOIN purchase_orders o ON o.id = r.order_id JOIN suppliers s ON s.id = o.supplier_id
-    JOIN warehouses w ON w.id = r.warehouse_id LEFT JOIN purchase_receipt_lines l ON l.receipt_id = r.id
-    GROUP BY r.id ORDER BY r.id DESC`).all();
+    JOIN warehouses w ON w.id = r.warehouse_id
+    ORDER BY r.id DESC`).all();
   const returns = db.prepare(`SELECT r.*, rec.folio AS receipt_folio, o.folio AS order_folio,
     COALESCE(s.trade_name, s.legal_name) AS supplier_name, w.code AS warehouse_code,
-    COUNT(l.id) AS line_count, COALESCE(SUM(l.quantity), 0) AS total_quantity
+    (SELECT COUNT(*) FROM purchase_return_lines l WHERE l.return_id = r.id) AS line_count,
+    COALESCE((SELECT SUM(l.quantity) FROM purchase_return_lines l WHERE l.return_id = r.id), 0) AS total_quantity
     FROM purchase_returns r JOIN purchase_receipts rec ON rec.id = r.receipt_id
     JOIN purchase_orders o ON o.id = r.order_id JOIN suppliers s ON s.id = o.supplier_id
-    JOIN warehouses w ON w.id = r.warehouse_id LEFT JOIN purchase_return_lines l ON l.return_id = r.id
-    GROUP BY r.id ORDER BY r.id DESC`).all();
+    JOIN warehouses w ON w.id = r.warehouse_id
+    ORDER BY r.id DESC`).all();
   const invoices = db.prepare(`SELECT i.*, o.folio AS order_folio, s.code AS supplier_code,
     COALESCE(s.trade_name, s.legal_name) AS supplier_name, cur.code AS currency_code,
     p.folio AS payable_folio, p.status AS payable_status, (p.original_amount - p.paid_amount) AS payable_balance

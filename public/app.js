@@ -16,6 +16,7 @@ const state = {
   masterHubSection: "items",
   masterHubQuery: "",
   inventoryOptions: null,
+  inventoryOverviewApiAvailable: null,
   inventoryWarehouseId: null,
   inventoryStockQuery: "",
   salesOptions: null,
@@ -47,6 +48,7 @@ const isRemoteHost = !["", "localhost", "127.0.0.1"].includes(location.hostname)
 const API_BASE = ["5050", "5150", "5260"].includes(location.port) || isRemoteHost ? "" : "http://127.0.0.1:5050";
 const API_GET_CACHE_MS = 15_000;
 const HR_CONTROL_CACHE_MS = 60_000;
+const INVENTORY_OVERVIEW_CACHE_MS = 30_000;
 const apiGetCache = new Map();
 const apiGetPending = new Map();
 const guardedFormSubmissions = [];
@@ -121,6 +123,19 @@ const purchasesViews = new Set(["purchases_control", "purchases_requests", "purc
 const safetyViews = new Set(["safety_control"]);
 const hrViews = new Set(["hr_control"]);
 const payrollViews = new Set(["payroll_control"]);
+const operationalTaskModuleByView = {
+  sales_control: "sales",
+  production_control: "production",
+  inventory_stock: "inventory",
+  purchases_control: "purchases",
+  quality_control: "quality",
+  logistics_control: "logistics",
+  maintenance_control: "maintenance",
+  finance_control: "finance",
+  safety_control: "safety",
+  hr_control: "hr",
+  payroll_control: "payroll",
+};
 
 const automaticCatalogCodes = {
   companies: { field: "code", example: "EMP-00001" },
@@ -202,7 +217,8 @@ function bindGlobalEvents() {
     $(".sidebar").classList.remove("open");
   });
   const prepareRequestedModule = (event) => {
-    if (event.target.closest('[data-view="hr_control"]')) void prefetchHrControl();
+    const button = event.target.closest("[data-view]");
+    if (button) void prefetchViewData(button.dataset.view);
   };
   $("#main-nav").addEventListener("pointerover", prepareRequestedModule);
   $("#main-nav").addEventListener("focusin", prepareRequestedModule);
@@ -341,7 +357,9 @@ function requestActionText(options = {}) {
 function openActionDialog(options) {
   return new Promise((resolve) => {
     const asksForText = Boolean(options.fieldLabel);
-    actionDialog.innerHTML = '<form class="modal-card compact action-dialog-card" method="dialog"><div class="action-dialog-symbol">' + (asksForText ? "✎" : "!") + '</div><span class="eyebrow">' + escapeHtml(options.eyebrow) + '</span><h2 id="action-dialog-title">' + escapeHtml(options.title) + '</h2><p class="muted">' + escapeHtml(options.message) + '</p>' +
+    actionDialog.innerHTML = '<form class="modal-card compact action-dialog-card" method="dialog">' +
+      (asksForText ? '<div class="action-dialog-symbol">✎</div>' : '') +
+      '<span class="eyebrow">' + escapeHtml(options.eyebrow) + '</span><h2 id="action-dialog-title">' + escapeHtml(options.title) + '</h2><p class="muted">' + escapeHtml(options.message) + '</p>' +
       (asksForText ? '<label class="action-dialog-field">' + escapeHtml(options.fieldLabel) + '<textarea name="actionValue" rows="4" minlength="' + options.minLength + '" placeholder="' + escapeAttribute(options.placeholder) + '" required>' + escapeHtml(options.initialValue) + '</textarea></label><p class="form-error hidden" role="alert"></p>' : "") +
       '<div class="modal-actions"><button class="button ghost" type="button" data-action-cancel>' + escapeHtml(options.cancelLabel) + '</button><button class="button ' + (options.tone === "danger" ? "danger" : "primary") + '" type="submit">' + escapeHtml(options.confirmLabel) + '</button></div></form>';
     const form = $("form", actionDialog), input = $('[name="actionValue"]', actionDialog);
@@ -379,6 +397,69 @@ async function prefetchHrControl() {
     state.hrOptions = control.options || state.hrOptions;
   } catch {
     // La navegación normal mostrará el error si RH realmente no está disponible.
+  }
+}
+
+async function prefetchInventoryOverview() {
+  if (state.user?.mustChangePassword || !hasPermission("inventory.view")) return;
+  try {
+    const overview = await loadInventoryOverview();
+    state.inventoryOptions = overview.options;
+  } catch {
+    // La navegación normal mostrará el error si el almacén realmente no está disponible.
+  }
+}
+
+async function loadInventoryOverview() {
+  if (state.inventoryOverviewApiAvailable !== false) {
+    try {
+      const overview = await api("/api/inventory/overview", { cacheTtlMs: INVENTORY_OVERVIEW_CACHE_MS });
+      state.inventoryOverviewApiAvailable = true;
+      return overview;
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      state.inventoryOverviewApiAvailable = false;
+    }
+  }
+  const [options, { balances }, { movements }] = await Promise.all([
+    api("/api/inventory/options"),
+    api("/api/inventory/balances"),
+    api("/api/inventory/movements"),
+  ]);
+  return { options, balances, movements };
+}
+
+const viewPrefetchPaths = {
+  masters_hub: ["/api/masters/options"],
+  sales_control: ["/api/sales/options", "/api/sales/control"],
+  production_control: ["/api/production/options", "/api/production/control"],
+  purchases_control: ["/api/purchases/options", "/api/purchases/control"],
+  quality_control: ["/api/quality/options", "/api/quality/control"],
+  maintenance_control: ["/api/maintenance/options", "/api/maintenance/control"],
+  logistics_control: ["/api/logistics/options", "/api/logistics/control"],
+  finance_control: ["/api/finance/options", "/api/finance/control"],
+  safety_control: ["/api/safety/options", "/api/safety/control"],
+  tasks_assigned: ["/api/tasks/options", "/api/tasks/control"],
+};
+
+async function prefetchViewData(view) {
+  if (state.user?.mustChangePassword) return;
+  if (view === "inventory_stock") return prefetchInventoryOverview();
+  if (view === "hr_control") {
+    try { await Promise.all([prefetchHrControl(), loadHrUiModule()]); } catch {}
+    return;
+  }
+  const paths = [...(viewPrefetchPaths[view] || [])];
+  if (view === "payroll_control") {
+    const payrollQuery = state.payrollPeriodId ? `?periodId=${encodeURIComponent(state.payrollPeriodId)}` : "";
+    paths.push("/api/payroll/control" + payrollQuery);
+  }
+  if (operationalTaskModuleByView[view] && hasPermission("tasks.view")) paths.push("/api/tasks/control");
+  if (!paths.length) return;
+  try {
+    await Promise.all(paths.map((path) => api(path)));
+  } catch {
+    // La navegación conserva el manejo visible de errores de cada módulo.
   }
 }
 
@@ -456,6 +537,15 @@ function showPasswordDialog() {
 }
 
 async function logout() {
+  const confirmed = await confirmAction({
+    eyebrow: "CIERRE DE SESIÓN",
+    title: "¿Deseas cerrar tu sesión?",
+    message: "Se cerrará tu acceso actual y volverás a la pantalla de inicio.",
+    confirmLabel: "Cerrar sesión",
+    cancelLabel: "Permanecer aquí",
+    tone: "danger",
+  });
+  if (!confirmed) return;
   try { await api("/api/auth/logout", { method: "POST" }); } catch {}
   state.user = null;
   state.csrfToken = "";
@@ -519,7 +609,9 @@ async function navigate(view) {
   };
   $("#page-title").textContent = titles[view][0];
   $("#breadcrumbs").textContent = titles[view][1];
-  pageContent.innerHTML = skeleton();
+  pageContent.setAttribute("aria-busy", "true");
+  pageContent.innerHTML = moduleLoadingSkeleton(view, titles[view]);
+  void prefetchViewData(view);
   try {
     if (masterHubViews.has(view)) await renderMasterHub();
     else if (masterUi[view]) await renderMaster(view);
@@ -537,9 +629,14 @@ async function navigate(view) {
     else if (payrollViews.has(view)) await renderPayroll();
     else await ({ dashboard: renderDashboard, users: renderUsers, roles: renderRoles, areas: renderAreas, catalogs: renderCatalogs,
       folios: renderFolios, documents: renderDocuments, notifications: renderNotifications, audit: renderAudit, settings: renderSettings })[view]();
+    if (operationalTaskModuleByView[view] && hasPermission("tasks.view")) {
+      await appendOperationalTaskPanel(operationalTaskModuleByView[view], view);
+    }
     pageContent.focus();
   } catch (error) {
     if (state.currentView === view) pageContent.innerHTML = errorState(error.message);
+  } finally {
+    if (state.currentView === view) pageContent.setAttribute("aria-busy", "false");
   }
 }
 
@@ -1340,9 +1437,9 @@ async function openPriceListItems(priceList, editingLine = null) {
 
 async function renderInventory(view) {
   const token = beginPageRender();
+  if (view === "inventory_stock") return renderInventoryStock(token);
   if (!state.inventoryOptions) state.inventoryOptions = await api("/api/inventory/options");
   if (!renderIsCurrent(token)) return;
-  if (view === "inventory_stock") return renderInventoryStock(token);
   if (["inventory_entries", "inventory_exits", "inventory_transfers", "inventory_adjustments"].includes(view)) return renderInventoryMovements(view, token);
   if (view === "inventory_reservations") return renderInventoryReservations(token);
   if (view === "inventory_lots") return renderInventoryLots(token);
@@ -1351,9 +1448,10 @@ async function renderInventory(view) {
 }
 
 async function renderInventoryStock(token) {
-  const [{ balances }, { movements }] = await Promise.all([api("/api/inventory/balances"), api("/api/inventory/movements")]);
+  const { options, balances, movements } = await loadInventoryOverview();
   if (!renderIsCurrent(token)) return;
-  const warehouses = state.inventoryOptions.warehouses;
+  state.inventoryOptions = options;
+  const warehouses = options.warehouses;
   if (!warehouses.length) {
     pageContent.innerHTML = `<section class="warehouse-empty-world"><div class="empty-warehouse-icon"><span></span><span></span><span></span></div><span class="eyebrow">ALMACÉN</span><h2>Crea tu primer almacén</h2><p>Cuando registres un almacén podrás verlo, cargar artículos y mover existencias desde esta misma pantalla.</p><button class="button primary" data-open-catalog-warehouses>Registrar almacén</button></section>`;
     pageContent.onclick = (event) => { if (event.target.closest("[data-open-catalog-warehouses]")) { state.catalogType = "warehouses"; navigate("catalogs"); } };
@@ -2920,9 +3018,50 @@ function financePeriodLabel(row) { return row.period_type === "annual" ? 'Anual 
 function financeStatusLabel(value) { return ({ pending: "Pendiente", partial: "Parcial", paid: "Pagado", overdue: "Vencido", cancelled: "Cancelado", draft: "Borrador", approved: "Aprobado", closed: "Cerrado", reconciled: "Conciliado", active: "Activo", inactive: "Inactivo" })[value] || value; }
 function financeStatusBadge(value) { const kind = ["overdue", "cancelled", "inactive"].includes(value) ? "danger" : ["pending", "partial", "draft"].includes(value) ? "warn" : ""; return '<span class="badge ' + kind + '">● ' + escapeHtml(financeStatusLabel(value)) + '</span>'; }
 
+const taskModuleLabels = {
+  general: "General", sales: "Ventas", production: "Producción", inventory: "Almacén",
+  purchases: "Compras", quality: "Calidad", logistics: "Logística", maintenance: "Mantenimiento",
+  finance: "Finanzas", safety: "Seguridad y salud", hr: "Recursos humanos", payroll: "Nómina y CFDI",
+};
+
+function taskModuleOptions(selected = "general") {
+  return Object.entries(taskModuleLabels).map(([value, label]) => '<option value="' + value + '" ' + (value === selected ? "selected" : "") + '>' + escapeHtml(label) + '</option>').join("");
+}
+
+async function ensureTasksOptions() {
+  if (!state.tasksOptions) state.tasksOptions = await api("/api/tasks/options");
+}
+
+async function appendOperationalTaskPanel(module, view) {
+  try {
+    const control = await api("/api/tasks/control");
+    if (state.currentView !== view) return;
+    const openStatuses = new Set(["pending", "in_progress", "submitted"]);
+    const tasks = control.tasks.filter((task) => task.module === module && openStatuses.has(task.status));
+    const flows = control.flows.filter((flow) => flow.module === module && flow.is_active);
+    const overdue = tasks.filter((task) => task.due_date && Number(task.days_remaining) < 0).length;
+    const taskRows = tasks.slice(0, 6).map((task) => '<article class="module-workflow-row"><div><span class="eyebrow">' + escapeHtml(task.folio + ' · ' + taskPriorityLabel(task.priority)) + '</span><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(task.assigned_to_name || "Sin responsable") + ' · ' + (task.due_date ? formatDateOnly(task.due_date) : "Sin fecha límite") + '</small></div>' + taskStatusBadge(task.status) + '<button class="link-button" type="button" data-module-task-detail="' + task.id + '">Ver</button></article>').join("");
+    const flowRows = flows.slice(0, 5).map((flow) => '<article class="module-workflow-flow"><div><strong>' + escapeHtml(flow.name) + '</strong><small>' + flow.step_count + ' etapa(s) · ' + escapeHtml(flow.step_summary || "Sin etapas") + '</small></div><button class="link-button" type="button" data-module-flow-detail="' + flow.id + '">Ver</button></article>').join("");
+    const actions = (hasPermission("tasks.manage") ? '<button class="button ghost" type="button" data-new-module-flow>＋ Flujo</button><button class="button primary" type="button" data-new-module-task>＋ Tarea</button>' : '') + '<button class="link-button" type="button" data-open-personal-tasks>Ver mis tareas</button>';
+    pageContent.insertAdjacentHTML("beforeend", '<section class="panel module-workflow-panel" data-operational-task-panel="' + module + '"><div class="panel-head module-workflow-head"><div><span class="eyebrow">SEGUIMIENTO DE ' + escapeHtml(taskModuleLabels[module].toUpperCase()) + '</span><h3>Tareas y aprobaciones</h3><p>El seguimiento de esta área permanece junto a su operación.</p></div><div class="module-workflow-actions">' + actions + '</div></div><div class="module-workflow-metrics"><div><span>Abiertas</span><strong>' + tasks.length + '</strong></div><div><span>Vencidas</span><strong class="' + (overdue ? 'danger-number' : '') + '">' + overdue + '</strong></div><div><span>Flujos activos</span><strong>' + flows.length + '</strong></div></div><div class="module-workflow-grid"><div><div class="module-workflow-title"><strong>Trabajo pendiente</strong><span>' + tasks.length + '</span></div><div class="module-workflow-list">' + (taskRows || '<div class="module-workflow-empty"><strong>Sin tareas abiertas</strong><small>El área está al día.</small></div>') + '</div></div><div><div class="module-workflow-title"><strong>Rutas de aprobación</strong><span>' + flows.length + '</span></div><div class="module-workflow-list">' + (flowRows || '<div class="module-workflow-empty"><strong>Sin flujos configurados</strong><small>Las tareas pueden administrarse de forma directa.</small></div>') + '</div></div></div></section>');
+    const panel = $('[data-operational-task-panel="' + module + '"]', pageContent);
+    panel.onclick = async (event) => {
+      const task = event.target.closest("[data-module-task-detail]");
+      if (task) return openTaskDetail(Number(task.dataset.moduleTaskDetail));
+      const flow = event.target.closest("[data-module-flow-detail]");
+      if (flow) return openApprovalFlowDetail(Number(flow.dataset.moduleFlowDetail));
+      if (event.target.closest("[data-open-personal-tasks]")) return navigate("tasks_assigned");
+      if (event.target.closest("[data-new-module-task]")) { try { await ensureTasksOptions(); openTaskModal(module); } catch (error) { toast(error.message, "error"); } return; }
+      if (event.target.closest("[data-new-module-flow]")) { try { await ensureTasksOptions(); openApprovalFlowModal(module); } catch (error) { toast(error.message, "error"); } }
+    };
+  } catch {
+    // El área operativa debe seguir disponible aunque el seguimiento temporal no pueda cargarse.
+  }
+}
+
 async function renderTasks(view) {
   const token = beginPageRender();
-  if (!state.tasksOptions) state.tasksOptions = await api("/api/tasks/options");
+  await ensureTasksOptions();
   const control = await api("/api/tasks/control");
   if (!renderIsCurrent(token)) return;
   pageContent.innerHTML = tasksMetrics(control.metrics) + tasksPage(view, control);
@@ -2944,8 +3083,8 @@ function tasksLead(eyebrow, title, text, action = "") {
 }
 
 function tasksAssignedPage(control) {
-  const action = hasPermission("tasks.manage") ? '<button id="new-workflow-task" class="button primary">＋ Nueva tarea</button>' : '';
-  return tasksLead("BANDEJA PERSONAL", "Tareas asignadas", "Actividades y decisiones que requieren tu atención.", action) +
+  const action = '<div class="module-workflow-actions">' + (hasPermission("tasks.manage") ? '<button id="open-task-flows" class="button ghost">Flujos del sistema</button><button id="new-workflow-task" class="button primary">＋ Nueva tarea</button>' : '') + '</div>';
+  return tasksLead("BANDEJA PERSONAL", "Mis tareas", "Actividades y decisiones que requieren tu atención. El historial permanece dentro de cada tarea.", action) +
     '<section class="tasks-board">' + (control.assigned.length ? control.assigned.map(taskCard).join("") : emptyMarkup("Sin tareas asignadas", "Tu bandeja está al día.")) + '</section>';
 }
 
@@ -2964,7 +3103,7 @@ function taskActions(task) {
 }
 
 function tasksFlowsPage(control) {
-  const action = hasPermission("tasks.manage") ? '<button id="new-approval-flow" class="button primary">＋ Nuevo flujo</button>' : '';
+  const action = '<div class="module-workflow-actions"><button id="back-to-personal-tasks" class="button ghost">← Mis tareas</button>' + (hasPermission("tasks.manage") ? '<button id="new-approval-flow" class="button primary">＋ Nuevo flujo</button>' : '') + '</div>';
   return tasksLead("REGLAS DE DECISIÓN", "Flujos de aprobación", "Define etapas, niveles y responsables para decisiones repetibles.", action) +
     '<section class="approval-flow-grid">' + (control.flows.length ? control.flows.map((flow) => '<article class="panel"><div class="flow-card-head"><span>' + escapeHtml(flow.folio) + '</span>' + taskStatusBadge(flow.is_active ? "active" : "inactive") + '</div><h3>' + escapeHtml(flow.name) + '</h3><p>' + escapeHtml(flow.description || "Sin descripción") + '</p><div class="flow-module">' + escapeHtml(flow.module.toUpperCase()) + (flow.entity_type ? ' · ' + escapeHtml(flow.entity_type) : '') + '</div><div class="flow-steps-summary"><strong>' + flow.step_count + ' etapa(s)</strong><small>' + escapeHtml(flow.step_summary || "Sin etapas") + '</small></div><button class="button ghost wide" data-flow-detail="' + flow.id + '">Ver flujo</button></article>').join("") : emptyMarkup("Sin flujos de aprobación", "Crea el primero y define sus responsables.")) + '</section>';
 }
@@ -2996,8 +3135,10 @@ function tasksEventList(rows) {
 }
 
 function bindTasksEvents() {
-  $("#new-workflow-task")?.addEventListener("click", openTaskModal);
-  $("#new-approval-flow")?.addEventListener("click", openApprovalFlowModal);
+  $("#new-workflow-task")?.addEventListener("click", () => openTaskModal());
+  $("#new-approval-flow")?.addEventListener("click", () => openApprovalFlowModal());
+  $("#open-task-flows")?.addEventListener("click", () => navigate("tasks_flows"));
+  $("#back-to-personal-tasks")?.addEventListener("click", () => navigate("tasks_assigned"));
   pageContent.onclick = async (event) => {
     const detail = event.target.closest("[data-task-detail]"); if (detail) return openTaskDetail(Number(detail.dataset.taskDetail));
     const flow = event.target.closest("[data-flow-detail]"); if (flow) return openApprovalFlowDetail(Number(flow.dataset.flowDetail));
@@ -3007,15 +3148,15 @@ function bindTasksEvents() {
   };
 }
 
-function openTaskModal() {
-  $("#entity-modal-content").innerHTML = '<form id="workflow-task-form"><div class="modal-head"><div><span class="eyebrow">TAREA</span><h2>Nueva tarea</h2><p class="muted">Asigna trabajo directo o vincúlalo a un flujo.</p></div><button type="button" data-close-modal>×</button></div>' + automaticCodeBanner("TAR-000000", true) + '<div class="form-grid"><label>Título<input name="title" required /></label><label>Flujo de aprobación<select name="flowId"><option value="">Tarea directa</option>' + taskFlowOptions() + '</select></label><label>Responsable<select name="assignedTo"><option value="">Automático según flujo / creador</option>' + taskUserOptions() + '</select></label><label>Prioridad<select name="priority"><option value="low">Baja</option><option value="medium" selected>Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label><label>Fecha límite<input name="dueDate" type="date" /></label><label>Módulo<select name="module"><option value="general">General</option><option value="sales">Ventas</option><option value="inventory">Inventario</option><option value="production">Producción</option><option value="quality">Calidad</option><option value="maintenance">Mantenimiento</option><option value="logistics">Logística</option><option value="finance">Finanzas</option></select></label><label>Tipo de registro<input name="entityType" placeholder="pedido, factura, orden…" /></label><label>ID o folio relacionado<input name="entityId" /></label></div><label>Descripción<textarea name="description" rows="4"></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Crear tarea</button></div></form>';
+function openTaskModal(defaultModule = "general") {
+  $("#entity-modal-content").innerHTML = '<form id="workflow-task-form"><div class="modal-head"><div><span class="eyebrow">TAREA</span><h2>Nueva tarea</h2><p class="muted">Asigna trabajo directo o vincúlalo a un flujo.</p></div><button type="button" data-close-modal>×</button></div>' + automaticCodeBanner("TAR-000000", true) + '<div class="form-grid"><label>Título<input name="title" required /></label><label>Flujo de aprobación<select name="flowId"><option value="">Tarea directa</option>' + taskFlowOptions() + '</select></label><label>Responsable<select name="assignedTo"><option value="">Automático según flujo / creador</option>' + taskUserOptions() + '</select></label><label>Prioridad<select name="priority"><option value="low">Baja</option><option value="medium" selected>Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label><label>Fecha límite<input name="dueDate" type="date" /></label><label>Área operativa<select name="module">' + taskModuleOptions(defaultModule) + '</select></label><label>Tipo de registro<input name="entityType" placeholder="pedido, factura, orden…" /></label><label>ID o folio relacionado<input name="entityId" /></label></div><label>Descripción<textarea name="description" rows="4"></textarea></label><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Crear tarea</button></div></form>';
   bindModuleForm("#workflow-task-form", "/api/tasks", null, "Tarea"); entityDialog.showModal();
 }
 
-function openApprovalFlowModal() {
+function openApprovalFlowModal(defaultModule = "general") {
   const steps = [];
   $("#entity-modal-content").classList.add("wide");
-  $("#entity-modal-content").innerHTML = '<form id="approval-flow-form"><div class="modal-head"><div><span class="eyebrow">FLUJO DE APROBACIÓN</span><h2>Nuevo flujo</h2><p class="muted">Construye la secuencia de decisión de principio a fin.</p></div><button type="button" data-close-modal>×</button></div>' + automaticCodeBanner("FLU-000000", true) + '<div class="form-grid"><label>Nombre<input name="name" required /></label><label>Módulo<select name="module"><option value="general">General</option><option value="sales">Ventas</option><option value="inventory">Inventario</option><option value="production">Producción</option><option value="quality">Calidad</option><option value="maintenance">Mantenimiento</option><option value="logistics">Logística</option><option value="finance">Finanzas</option></select></label><label>Tipo de registro<input name="entityType" /></label></div><label>Descripción<textarea name="description" rows="3"></textarea></label><section class="line-builder"><div class="panel-head"><h3>Etapas de aprobación</h3><span>ORDEN, NIVEL Y RESPONSABLE</span></div><div class="approval-step-fields"><label>Etapa<input id="approval-step-name" placeholder="Revisión del supervisor" /></label><label>Nivel requerido<select id="approval-step-level"><option value="1">1 · Consultar</option><option value="2">2 · Crear y editar</option><option value="3" selected>3 · Validar y aprobar</option><option value="4">4 · Administrar</option></select></label><label>Responsable<select id="approval-step-user"><option value="">Se conserva el responsable</option>' + taskUserOptions() + '</select></label><button class="button ghost" type="button" id="add-approval-step">Agregar etapa</button></div><div id="approval-flow-steps"></div></section><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar flujo</button></div></form>';
+  $("#entity-modal-content").innerHTML = '<form id="approval-flow-form"><div class="modal-head"><div><span class="eyebrow">FLUJO DE APROBACIÓN</span><h2>Nuevo flujo</h2><p class="muted">Construye la secuencia de decisión de principio a fin.</p></div><button type="button" data-close-modal>×</button></div>' + automaticCodeBanner("FLU-000000", true) + '<div class="form-grid"><label>Nombre<input name="name" required /></label><label>Área operativa<select name="module">' + taskModuleOptions(defaultModule) + '</select></label><label>Tipo de registro<input name="entityType" /></label></div><label>Descripción<textarea name="description" rows="3"></textarea></label><section class="line-builder"><div class="panel-head"><h3>Etapas de aprobación</h3><span>ORDEN, NIVEL Y RESPONSABLE</span></div><div class="approval-step-fields"><label>Etapa<input id="approval-step-name" placeholder="Revisión del supervisor" /></label><label>Nivel requerido<select id="approval-step-level"><option value="1">1 · Consultar</option><option value="2">2 · Crear y editar</option><option value="3" selected>3 · Validar y aprobar</option><option value="4">4 · Administrar</option></select></label><label>Responsable<select id="approval-step-user"><option value="">Se conserva el responsable</option>' + taskUserOptions() + '</select></label><button class="button ghost" type="button" id="add-approval-step">Agregar etapa</button></div><div id="approval-flow-steps"></div></section><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Guardar flujo</button></div></form>';
   const render = () => { $("#approval-flow-steps").innerHTML = steps.length ? '<div class="approval-step-list">' + steps.map((s, i) => '<article><span>' + (i + 1) + '</span><div><strong>' + escapeHtml(s.name) + '</strong><small>Nivel ' + s.requiredLevel + ' · ' + escapeHtml(s.assigneeName || "Responsable actual") + '</small></div><button type="button" class="link-button danger-link" data-remove-approval-step="' + i + '">Quitar</button></article>').join("") + '</div>' : emptyMarkup("Sin etapas", "Agrega al menos una etapa de aprobación."); }; render();
   $("#add-approval-step").onclick = () => { const name = $("#approval-step-name").value.trim(); if (!name) return toast("Captura el nombre de la etapa.", "error"); const user = state.tasksOptions.users.find((u) => u.id === Number($("#approval-step-user").value)); steps.push({ name, requiredLevel: Number($("#approval-step-level").value), defaultAssigneeId: user?.id || null, assigneeName: user?.full_name || "" }); $("#approval-step-name").value = ""; render(); };
   $("#approval-flow-steps").onclick = (event) => { const button = event.target.closest("[data-remove-approval-step]"); if (button) { steps.splice(Number(button.dataset.removeApprovalStep), 1); render(); } };
@@ -3519,17 +3660,21 @@ function finishGuardedFormSubmission(submission) {
 function openDocumentModal() {
   const options = state.documentOptions || { documentTypes: [], employees: [] };
   const employeeOptions = '<option value="">Documento general</option>' + (options.employees || []).map((row) => `<option value="${row.id}">${escapeHtml(row.employee_number)} · ${escapeHtml(row.full_name)}</option>`).join("");
-  const typeOptions = '<option value="">Sin clasificación laboral</option>' + (options.documentTypes || []).map((row) => `<option value="${row.id}" data-sensitive="${escapeAttribute(row.sensitivity)}" data-issue="${row.requires_issue_date}" data-expiry="${row.requires_expiry_date}">${escapeHtml(row.name)}</option>`).join("");
-  $("#entity-modal-content").innerHTML = `<form id="document-form"><div class="modal-head"><div><span class="eyebrow">NUEVO DOCUMENTO</span><h2>Cargar archivo</h2><p class="muted">Si ya existe un archivo de la misma clase para el colaborador, se conservará como una versión anterior.</p></div><button type="button" data-close-modal>×</button></div><label>Archivo<input name="file" type="file" required /></label><div class="form-grid"><label>Colaborador<select name="employeeId" id="document-employee">${employeeOptions}</select></label><label>Clasificación<select name="documentTypeId" id="document-type">${typeOptions}</select><small class="field-help" id="document-sensitivity-help">Documento general sin clasificación sensible.</small></label><label>Fecha de emisión<input name="issueDate" type="date" /></label><label>Fecha de vencimiento<input name="expiryDate" type="date" /></label><label>Módulo<input name="module" value="core" placeholder="recursos_humanos" required /></label><label>Tipo de referencia<input name="entityType" placeholder="expediente_empleado" /></label><label>ID de referencia<input name="entityId" placeholder="125" /></label><label>Descripción<input name="description" placeholder="Documento firmado" /></label></div><p class="upload-note">Tamaño máximo: 8 MB por archivo. La clasificación define automáticamente sus permisos.</p><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Cargar documento</button></div></form>`;
+  const typeOptions = '<option value="">Sin clasificación laboral</option>' + (options.documentTypes || []).map((row) => `<option value="${row.id}" data-sensitive="${escapeAttribute(row.sensitivity)}" data-issue="${row.requires_issue_date}" data-expiry="${row.requires_expiry_date}" data-allows-expiry="${row.allows_expiry_date}">${escapeHtml(row.name)}</option>`).join("");
+  $("#entity-modal-content").innerHTML = `<form id="document-form"><div class="modal-head"><div><span class="eyebrow">NUEVO DOCUMENTO</span><h2>Cargar archivo</h2><p class="muted">Si ya existe un archivo de la misma clase para el colaborador, se conservará como una versión anterior.</p></div><button type="button" data-close-modal>×</button></div><label>Archivo<input name="file" type="file" required /></label><div class="form-grid"><label>Colaborador<select name="employeeId" id="document-employee">${employeeOptions}</select></label><label>Clasificación<select name="documentTypeId" id="document-type">${typeOptions}</select><small class="field-help" id="document-sensitivity-help">Documento general sin clasificación sensible.</small></label><label>Fecha de emisión<input name="issueDate" type="date" /></label><label id="document-expiry-field">Fecha de vencimiento<input name="expiryDate" type="date" /></label><label>Módulo<input name="module" value="core" placeholder="recursos_humanos" required /></label><label>Tipo de referencia<input name="entityType" placeholder="expediente_empleado" /></label><label>ID de referencia<input name="entityId" placeholder="125" /></label><label>Descripción<input name="description" placeholder="Documento firmado" /></label></div><p class="upload-note">Tamaño máximo: 8 MB por archivo. La clasificación define automáticamente sus permisos.</p><p class="form-error hidden"></p><div class="modal-actions"><button class="button ghost" type="button" data-close-modal>Cancelar</button><button class="button primary" type="submit">Cargar documento</button></div></form>`;
   const form = $("#document-form"), employeeSelect = $("#document-employee"), typeSelect = $("#document-type");
   const syncDocumentRules = () => {
     const option = typeSelect.selectedOptions[0];
+    const allowsExpiry = !option?.value || option.dataset.allowsExpiry === "1";
     typeSelect.required = Boolean(employeeSelect.value);
     form.module.value = employeeSelect.value ? "hr" : (form.module.value || "core");
     form.entityType.value = employeeSelect.value ? "employee" : form.entityType.value;
     form.entityId.value = employeeSelect.value || form.entityId.value;
     form.issueDate.required = option?.dataset.issue === "1";
-    form.expiryDate.required = option?.dataset.expiry === "1";
+    $("#document-expiry-field").hidden = !allowsExpiry;
+    form.expiryDate.disabled = !allowsExpiry;
+    form.expiryDate.required = allowsExpiry && option?.dataset.expiry === "1";
+    if (!allowsExpiry) form.expiryDate.value = "";
     $("#document-sensitivity-help").textContent = option?.value
       ? "Acceso: " + documentSensitivityLabel(option.dataset.sensitive) : "Documento general sin clasificación sensible.";
   };
@@ -3901,7 +4046,7 @@ function openSafetyModal(type) {
 async function renderPayroll() {
   beginPageRender();
   const payrollQuery = state.payrollPeriodId ? `?periodId=${encodeURIComponent(state.payrollPeriodId)}` : "";
-  const control = await api("/api/payroll/control" + payrollQuery, { cache: false });
+  const control = await api("/api/payroll/control" + payrollQuery);
   const cfdi = control.cfdi || { periods: [], receipts: [], indicators: {} };
   const preparation = control.preparation || { selectedPeriod: null, preparation: null, lines: [], totals: {}, warnings: [] };
   if (preparation.selectedPeriod) state.payrollPeriodId = Number(preparation.selectedPeriod.id);
@@ -4143,7 +4288,7 @@ let hrUiModulePromise = null;
 
 async function loadHrUiModule() {
   if (!hrUiModulePromise) {
-    hrUiModulePromise = import("./modules/hr.js?v=20260807-81")
+    hrUiModulePromise = import("./modules/hr.js?v=20260901-05")
       .then(({ createHrModule }) => createHrModule({ $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials }))
       .catch((error) => { hrUiModulePromise = null; throw error; });
   }
@@ -4232,8 +4377,9 @@ function activityItem(item) {
 function checkbox(name, value, label, checked) {
   return `<label class="check-option"><input type="checkbox" name="${name}" value="${value}" ${checked ? "checked" : ""} /><span>${escapeHtml(label)}</span></label>`;
 }
-function automaticCodeBanner(value, pending) {
-  return `<div class="automatic-code"><span>${pending ? "FOLIO AUTOMÁTICO" : "FOLIO ASIGNADO"}</span><strong>${escapeHtml(value)}</strong><small>${pending ? "Se calculará al guardar según el tipo y número de registro." : "El identificador permanece fijo durante la vida del registro."}</small></div>`;
+function automaticCodeBanner() {
+  // El identificador continúa asignándose al guardar; no requiere una vista previa en el formulario.
+  return "";
 }
 function hasPermission(code) { return state.user?.permissions.includes(code); }
 function initials(name) { return String(name).split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
@@ -4244,7 +4390,42 @@ function formatDate(value, fallback = "—") {
   if (Number.isNaN(date.getTime())) return fallback;
   return new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
-function skeleton() { return '<div class="panel"><div class="empty"><strong>Cargando información…</strong><span>Un momento, por favor.</span></div></div>'; }
+function loadingContext(view) {
+  if (masterUi[view] || masterHubViews.has(view)) return { key: "masters", label: "Datos maestros" };
+  const contexts = [
+    [salesViews, "sales", "Ventas"], [productionViews, "production", "Producción"],
+    [inventoryViews, "inventory", "Almacén"], [purchasesViews, "purchases", "Compras"],
+    [qualityViews, "quality", "Calidad"], [maintenanceViews, "maintenance", "Mantenimiento"],
+    [logisticsViews, "logistics", "Logística"], [financeViews, "finance", "Finanzas"],
+    [tasksViews, "tasks", "Tareas"], [safetyViews, "safety", "Seguridad y salud"],
+    [hrViews, "hr", "Recursos humanos"], [payrollViews, "payroll", "Nómina"],
+  ];
+  const match = contexts.find(([views]) => views.has(view));
+  return match ? { key: match[1], label: match[2] } : { key: "core", label: "Sistema" };
+}
+
+function skeleton() { return moduleLoadingSkeleton(state.currentView); }
+function moduleLoadingSkeleton(view, titleEntry = null) {
+  const context = loadingContext(view);
+  const title = titleEntry?.[0] || context.label;
+  return `<section class="module-loading module-loading-${context.key}" role="status" aria-live="polite" aria-label="Cargando ${escapeAttribute(context.label)}">
+    <header class="module-loading-head">
+      <div><span class="eyebrow">PREPARANDO ${escapeHtml(context.label.toUpperCase())}</span><h2>Cargando ${escapeHtml(title)}</h2><p>Sincronizando información y actividad reciente…</p></div>
+      <span class="module-loading-indicator" aria-hidden="true"><i></i><i></i><i></i></span>
+    </header>
+    <div class="module-loading-switcher" aria-hidden="true">
+      ${Array.from({ length: 3 }, () => '<span class="module-loading-selector"><i></i><b></b><em></em></span>').join("")}
+    </div>
+    <div class="module-loading-command" aria-hidden="true">
+      <div class="module-loading-copy"><span></span><strong></strong><i></i><i></i><i></i></div>
+      <div class="module-loading-scene"><span></span><span></span><span></span></div>
+    </div>
+    <div class="module-loading-vitals" aria-hidden="true">
+      ${Array.from({ length: 5 }, () => '<span><i></i><strong></strong><small></small></span>').join("")}
+    </div>
+    <div class="module-loading-panels" aria-hidden="true"><span></span><span></span></div>
+  </section>`;
+}
 function emptyMarkup(title, detail) { return `<div class="empty"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span></div>`; }
 function errorState(message) { return `<div class="panel">${emptyMarkup("No fue posible cargar esta sección", message)}</div>`; }
 function toast(message, type = "success") {
