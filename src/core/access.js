@@ -2,7 +2,7 @@ export const moduleCatalog = [
   { key: "dashboard", group: "core", label: "Dashboards", description: "Panel principal y atajos personales", symbol: "⌂", permissionModules: ["dashboard"] },
   { key: "core", group: "core", label: "Núcleo operativo", description: "Catálogos, folios, documentos y notificaciones", symbol: "◇", permissionModules: ["areas", "catalogs", "folios", "documents", "notifications"] },
   { key: "masters", group: "core", label: "Datos maestros", description: "Artículos, clientes, proveedores, personal y recursos", symbol: "▦", permissionModules: ["masters"] },
-  { key: "system", group: "core", label: "Supervisión del sistema", description: "Configuración y bitácora", symbol: "◉", permissionModules: ["settings", "audit"] },
+  { key: "system", group: "core", label: "Supervisión del sistema", description: "Usuarios, permisos, configuración y bitácora", symbol: "◉", permissionModules: ["users", "roles", "settings", "audit"] },
   { key: "purchases", group: "commercial", label: "Compras", description: "Solicitudes, órdenes y recepción", symbol: "↘", permissionModules: ["purchases"] },
   { key: "sales", group: "commercial", label: "Ventas", description: "Prospectos, pedidos, entrega y facturación", symbol: "↗", permissionModules: ["sales"] },
   { key: "inventory", group: "commercial", label: "Almacén", description: "Existencias y movimientos de inventario", symbol: "▤", permissionModules: ["inventory"] },
@@ -64,11 +64,16 @@ export function effectiveModuleAccess(db, userId) {
 }
 
 export function permissionsForUser(db, userId) {
-  const codes = new Set(db.prepare(`SELECT DISTINCT p.code FROM permissions p
+  const direct = explicitModuleAccess(db, userId);
+  const controlledModules = new Set(moduleCatalog.flatMap((module) => module.permissionModules));
+  const rolePermissions = db.prepare(`SELECT DISTINCT p.code, p.module FROM permissions p
     JOIN role_permissions rp ON rp.permission_id = p.id
     JOIN user_roles ur ON ur.role_id = rp.role_id
-    WHERE ur.user_id = ?`).all(userId).map((row) => row.code));
-  for (const access of explicitModuleAccess(db, userId)) {
+    WHERE ur.user_id = ?`).all(userId);
+  const codes = new Set(rolePermissions
+    .filter((permission) => !direct.length || !controlledModules.has(permission.module))
+    .map((permission) => permission.code));
+  for (const access of direct) {
     const module = moduleByKey.get(access.key);
     if (!module) continue;
     const placeholders = module.permissionModules.map(() => "?").join(", ");

@@ -661,7 +661,6 @@ const dashboardShortcutCatalog = [
   { id: "hr", label: "Recursos humanos", description: "Personal, ausencias y asistencia", symbol: "♙", permission: "hr.view", view: "hr_control" },
   { id: "logistics", label: "Logística", description: "Preparación y entregas", symbol: "⇢", permission: "logistics.view", view: "logistics_control" },
   { id: "finance", label: "Finanzas", description: "Tesorería y compromisos", symbol: "$", permission: "finance.view", view: "finance_control" },
-  { id: "tasks", label: "Mis tareas", description: "Pendientes y aprobaciones", symbol: "●", permission: "tasks.view", view: "tasks_assigned" },
   { id: "masters", label: "Datos maestros", description: "Artículos, clientes y proveedores", symbol: "▦", permission: "masters.view", view: "masters_hub" },
   { id: "audit", label: "Bitácora", description: "Movimientos del sistema", symbol: "≡", permission: "audit.view", view: "audit" },
   { id: "supervision", label: "Supervisión del sistema", description: "Sesiones, eventos y actividad", symbol: "◉", permission: "settings.view", view: "settings", section: "supervision" },
@@ -683,7 +682,7 @@ function dashboardShortcutIds() {
     const stored = JSON.parse(localStorage.getItem(dashboardShortcutStorageKey()));
     if (Array.isArray(stored)) return stored.filter((id, index) => validIds.has(id) && stored.indexOf(id) === index);
   } catch {}
-  return ["sales", "inventory", "purchases", "tasks", "supervision"].filter((id) => validIds.has(id));
+  return ["sales", "inventory", "purchases", "production"].filter((id) => validIds.has(id));
 }
 
 function saveDashboardShortcutIds(ids) {
@@ -691,19 +690,26 @@ function saveDashboardShortcutIds(ids) {
 }
 
 function dashboardShortcutCard(shortcut) {
-  return '<article class="dashboard-shortcut-card"><button type="button" class="dashboard-shortcut-open" data-dashboard-shortcut="' + shortcut.id + '"><span>' + shortcut.symbol + '</span><div><strong>' + escapeHtml(shortcut.label) + '</strong><small>' + escapeHtml(shortcut.description) + '</small></div><b>→</b></button><button type="button" class="dashboard-shortcut-remove" data-remove-dashboard-shortcut="' + shortcut.id + '" aria-label="Quitar atajo ' + escapeAttribute(shortcut.label) + '" title="Quitar atajo">×</button></article>';
+  return '<article class="dashboard-shortcut-card"><button type="button" class="dashboard-shortcut-open" data-dashboard-shortcut="' + shortcut.id + '" aria-label="Abrir ' + escapeAttribute(shortcut.label) + '" title="' + escapeAttribute(shortcut.description) + '"><span>' + shortcut.symbol + '</span><strong>' + escapeHtml(shortcut.label) + '</strong><b>→</b></button><button type="button" class="dashboard-shortcut-remove" data-remove-dashboard-shortcut="' + shortcut.id + '" aria-label="Quitar atajo ' + escapeAttribute(shortcut.label) + '" title="Quitar atajo">×</button></article>';
 }
 
 async function renderDashboard() {
-  beginPageRender();
+  const token = beginPageRender();
   const selectedIds = dashboardShortcutIds();
   const catalog = availableDashboardShortcuts();
   const selected = selectedIds.map((id) => catalog.find((shortcut) => shortcut.id === id)).filter(Boolean);
-  pageContent.innerHTML = '<section class="dashboard-welcome"><div><span class="eyebrow">DASHBOARDS</span><h2>Buenos días, ' + escapeHtml(firstName(state.user.fullName)) + '.</h2><p>Organiza aquí los accesos que utilizas con mayor frecuencia.</p></div></section>' +
-    '<section class="dashboard-shortcuts-panel"><div class="dashboard-shortcuts-head"><div><span class="eyebrow">TU ESPACIO DE TRABAJO</span><h3>Mis atajos</h3><p>Puedes agregar o quitar los accesos que utilizas cada día.</p></div><div class="dashboard-shortcuts-actions"><span>' + selected.length + ' ATAJO(S)</span><button class="button primary" type="button" id="add-dashboard-shortcut">＋ Agregar atajo</button></div></div>' +
-    (selected.length ? '<div class="dashboard-shortcut-grid">' + selected.map(dashboardShortcutCard).join("") + '</div>' : '<div class="dashboard-shortcut-empty"><span>＋</span><strong>Tu dashboard está vacío</strong><p>Agrega los módulos que quieres tener siempre a la mano.</p><button class="button primary" type="button" data-empty-add-shortcut>Agregar mi primer atajo</button></div>') + '</section>';
+  const tasksEnabled = hasPermission("tasks.view");
+  pageContent.innerHTML = '<section class="dashboard-welcome"><div><span class="eyebrow">TU ESPACIO DE TRABAJO</span><h2>Buenos días, ' + escapeHtml(firstName(state.user.fullName)) + '.</h2><p>Lo importante para hoy, sin recorrer todo el sistema.</p></div></section>' +
+    '<div class="dashboard-focus-grid">' +
+      (tasksEnabled ? dashboardTasksWidget(null, true) : '') +
+      '<section class="dashboard-shortcuts-panel"><div class="dashboard-shortcuts-head"><div><span class="eyebrow">ACCESOS FRECUENTES</span><h3>Atajos</h3></div><div class="dashboard-shortcuts-actions"><span>' + selected.length + '</span><button class="button ghost small" type="button" id="add-dashboard-shortcut">Personalizar</button></div></div>' +
+      (selected.length ? '<div class="dashboard-shortcut-grid">' + selected.map(dashboardShortcutCard).join("") + '</div>' : '<div class="dashboard-shortcut-empty"><strong>Sin atajos</strong><p>Agrega sólo los accesos que utilizas con frecuencia.</p><button class="button ghost small" type="button" data-empty-add-shortcut>Personalizar</button></div>') + '</section>' +
+    '</div>';
   pageContent.onclick = (event) => {
     if (event.target.closest("#add-dashboard-shortcut") || event.target.closest("[data-empty-add-shortcut]")) return openDashboardShortcutModal();
+    if (event.target.closest("[data-dashboard-tasks-open]")) return navigate("tasks_assigned");
+    const task = event.target.closest("[data-dashboard-task]");
+    if (task) return openTaskDetail(Number(task.dataset.dashboardTask));
     const remove = event.target.closest("[data-remove-dashboard-shortcut]");
     if (remove) {
       saveDashboardShortcutIds(dashboardShortcutIds().filter((id) => id !== remove.dataset.removeDashboardShortcut));
@@ -716,6 +722,30 @@ async function renderDashboard() {
     if (shortcut.section) state.settingsSection = shortcut.section;
     navigate(shortcut.view);
   };
+  if (!tasksEnabled) return;
+  try {
+    const control = await api("/api/tasks/control", { cacheTtlMs: 15000 });
+    if (!renderIsCurrent(token)) return;
+    const placeholder = $("[data-dashboard-tasks]", pageContent);
+    if (placeholder) placeholder.outerHTML = dashboardTasksWidget(control);
+  } catch {
+    if (!renderIsCurrent(token)) return;
+    const placeholder = $("[data-dashboard-tasks]", pageContent);
+    if (placeholder) placeholder.outerHTML = dashboardTasksWidget(null, false, true);
+  }
+}
+
+function dashboardTasksWidget(control, loading = false, failed = false) {
+  const openStatuses = new Set(["pending", "in_progress", "submitted"]);
+  const tasks = (control?.assigned || []).filter((task) => openStatuses.has(task.status));
+  const overdue = tasks.filter((task) => task.due_date && Number(task.days_remaining) < 0).length;
+  const rows = tasks.slice(0, 4).map((task) => '<button type="button" class="dashboard-task-row" data-dashboard-task="' + task.id + '"><span class="dashboard-task-priority ' + escapeAttribute(task.priority) + '"></span><span><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(taskModuleLabels[task.module] || task.module) + ' · ' + (task.due_date ? formatDateOnly(task.due_date) : "Sin fecha límite") + '</small></span>' + taskStatusBadge(task.status) + '</button>').join("");
+  const body = loading
+    ? '<div class="dashboard-tasks-state"><span class="compact-loader"></span><small>Consultando pendientes…</small></div>'
+    : failed
+      ? '<div class="dashboard-tasks-state"><strong>No fue posible consultar las tareas</strong><small>Los demás accesos siguen disponibles.</small></div>'
+      : rows || '<div class="dashboard-tasks-state"><strong>Todo al día</strong><small>No tienes tareas pendientes.</small></div>';
+  return '<section class="dashboard-tasks-card" data-dashboard-tasks><div class="dashboard-tasks-head"><div><span class="eyebrow">MI BANDEJA</span><h3>Mis tareas</h3></div><div class="dashboard-task-counts"><span><strong>' + tasks.length + '</strong> pendientes</span><span class="' + (overdue ? 'overdue' : '') + '"><strong>' + overdue + '</strong> vencidas</span></div></div><div class="dashboard-task-list">' + body + '</div><button class="dashboard-tasks-open" type="button" data-dashboard-tasks-open>Ver bandeja completa <span>→</span></button></section>';
 }
 
 function openDashboardShortcutModal() {
@@ -3040,10 +3070,9 @@ async function appendOperationalTaskPanel(module, view) {
     const tasks = control.tasks.filter((task) => task.module === module && openStatuses.has(task.status));
     const flows = control.flows.filter((flow) => flow.module === module && flow.is_active);
     const overdue = tasks.filter((task) => task.due_date && Number(task.days_remaining) < 0).length;
-    const taskRows = tasks.slice(0, 6).map((task) => '<article class="module-workflow-row"><div><span class="eyebrow">' + escapeHtml(task.folio + ' · ' + taskPriorityLabel(task.priority)) + '</span><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(task.assigned_to_name || "Sin responsable") + ' · ' + (task.due_date ? formatDateOnly(task.due_date) : "Sin fecha límite") + '</small></div>' + taskStatusBadge(task.status) + '<button class="link-button" type="button" data-module-task-detail="' + task.id + '">Ver</button></article>').join("");
-    const flowRows = flows.slice(0, 5).map((flow) => '<article class="module-workflow-flow"><div><strong>' + escapeHtml(flow.name) + '</strong><small>' + flow.step_count + ' etapa(s) · ' + escapeHtml(flow.step_summary || "Sin etapas") + '</small></div><button class="link-button" type="button" data-module-flow-detail="' + flow.id + '">Ver</button></article>').join("");
-    const actions = (hasPermission("tasks.manage") ? '<button class="button ghost" type="button" data-new-module-flow>＋ Flujo</button><button class="button primary" type="button" data-new-module-task>＋ Tarea</button>' : '') + '<button class="link-button" type="button" data-open-personal-tasks>Ver mis tareas</button>';
-    pageContent.insertAdjacentHTML("beforeend", '<section class="panel module-workflow-panel" data-operational-task-panel="' + module + '"><div class="panel-head module-workflow-head"><div><span class="eyebrow">SEGUIMIENTO DE ' + escapeHtml(taskModuleLabels[module].toUpperCase()) + '</span><h3>Tareas y aprobaciones</h3><p>El seguimiento de esta área permanece junto a su operación.</p></div><div class="module-workflow-actions">' + actions + '</div></div><div class="module-workflow-metrics"><div><span>Abiertas</span><strong>' + tasks.length + '</strong></div><div><span>Vencidas</span><strong class="' + (overdue ? 'danger-number' : '') + '">' + overdue + '</strong></div><div><span>Flujos activos</span><strong>' + flows.length + '</strong></div></div><div class="module-workflow-grid"><div><div class="module-workflow-title"><strong>Trabajo pendiente</strong><span>' + tasks.length + '</span></div><div class="module-workflow-list">' + (taskRows || '<div class="module-workflow-empty"><strong>Sin tareas abiertas</strong><small>El área está al día.</small></div>') + '</div></div><div><div class="module-workflow-title"><strong>Rutas de aprobación</strong><span>' + flows.length + '</span></div><div class="module-workflow-list">' + (flowRows || '<div class="module-workflow-empty"><strong>Sin flujos configurados</strong><small>Las tareas pueden administrarse de forma directa.</small></div>') + '</div></div></div></section>');
+    const taskRows = tasks.slice(0, 3).map((task) => '<button class="module-workflow-row" type="button" data-module-task-detail="' + task.id + '"><span class="dashboard-task-priority ' + escapeAttribute(task.priority) + '"></span><span><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(task.assigned_to_name || "Sin responsable") + ' · ' + (task.due_date ? formatDateOnly(task.due_date) : "Sin fecha límite") + '</small></span>' + taskStatusBadge(task.status) + '</button>').join("");
+    const actions = (hasPermission("tasks.manage") ? '<button class="button ghost small" type="button" data-new-module-task>＋ Tarea</button><button class="button ghost small" type="button" data-new-module-flow>Configurar flujo</button>' : '') + '<button class="link-button" type="button" data-open-personal-tasks>Mis tareas</button>';
+    pageContent.insertAdjacentHTML("beforeend", '<section class="module-workflow-shell" data-operational-task-panel="' + module + '"><details class="module-workflow-menu"><summary><span class="module-workflow-menu-icon">✓</span><span><strong>Seguimiento</strong><small>' + tasks.length + ' pendiente(s) · ' + overdue + ' vencida(s)</small></span><span class="module-workflow-menu-flow">' + flows.length + ' flujo(s)</span><span class="module-workflow-chevron">⌄</span></summary><div class="module-workflow-menu-body"><div class="module-workflow-menu-actions">' + actions + '</div><div class="module-workflow-list">' + (taskRows || '<div class="module-workflow-empty"><strong>Todo al día</strong><small>Sin tareas abiertas en ' + escapeHtml(taskModuleLabels[module]) + '.</small></div>') + '</div>' + (tasks.length > 3 ? '<button class="module-workflow-more link-button" type="button" data-open-personal-tasks>Ver ' + (tasks.length - 3) + ' pendiente(s) más</button>' : '') + '</div></details></section>');
     const panel = $('[data-operational-task-panel="' + module + '"]', pageContent);
     panel.onclick = async (event) => {
       const task = event.target.closest("[data-module-task-detail]");

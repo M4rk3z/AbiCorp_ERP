@@ -20,17 +20,20 @@ test("el Centro de Gestion identifica el rol ADMIN sin depender del nombre de us
   assert.match(source, /user\.isSystemAdmin \? "Administrador del sistema"/);
 });
 
-test("la cuenta ADMIN es de solo lectura en interfaz y servidor", () => {
+test("la cuenta ADMIN permite editar accesos sin perder su proteccion", () => {
   assert.match(source, /Cuenta ADMIN protegida/);
   assert.match(source, /protectedAdmin/);
-  assert.match(source, /user\.isSystemAdmin \? "Consultar" : "Gestionar"/);
-  assert.match(backend, /cuenta ADMIN del sistema esta protegida y no puede modificarse/);
+  assert.match(source, /data-edit-user="\$\{user\.id\}">Gestionar/);
+  assert.match(source, /Puedes modificar sus datos y accesos/);
+  assert.match(source, /input\[name="status"\]/);
+  assert.match(backend, /const systemAdmin = userHasSystemAdminRole/);
+  assert.match(backend, /if \(!systemAdmin\) \{/);
   assert.match(backend, /cuenta ADMIN del sistema esta protegida y no puede retirarse/);
 });
 
 test("el Centro de Gestion versiona la interfaz corregida", () => {
-  assert.match(html, /styles\.css\?v=20260826-06/);
-  assert.match(html, /app\.js\?v=20260826-06/);
+  assert.match(html, /styles\.css\?v=20260907-01/);
+  assert.match(html, /app\.js\?v=20260907-01/);
 });
 
 test("el Centro de Gestion puede crear una empresa demo precargada", () => {
