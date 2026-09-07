@@ -636,6 +636,9 @@ test("flujo principal del núcleo ERP", async (t) => {
   const vacationPrint = await request(`/api/hr/leaves/${vacation.data.id}/print`, { method: "POST", body: {} });
   assert.equal(vacationPrint.response.status, 200);
   assert.equal(vacationPrint.data.receipt.printCount, 1);
+  app.db.prepare("UPDATE hr_leave_requests SET current_approval_step = 'manager' WHERE id = ?").run(vacation.data.id);
+  app.db.prepare("UPDATE hr_leave_workflow_steps SET status = 'pending' WHERE leave_request_id = ? AND step_type = 'manager'").run(vacation.data.id);
+  app.db.prepare("UPDATE hr_leave_workflow_steps SET status = 'blocked' WHERE leave_request_id = ? AND step_type = 'hr'").run(vacation.data.id);
 
   const attendanceEntry = await request("/api/hr/attendance", {
     method: "POST",
@@ -1241,8 +1244,22 @@ test("flujo principal del núcleo ERP", async (t) => {
   assert.equal(notification.data.recipients, 1);
   const inbox = await request("/api/notifications");
   assert.equal(inbox.data.notifications[0].title, "Núcleo disponible");
+  assert.equal(inbox.data.actionItems.some((item) => item.entityType === "hr_leave_request"
+    && item.entityId === vacation.data.id && item.targetView === "hr_control"), true);
   const marked = await request(`/api/notifications/${inbox.data.notifications[0].id}/read`, { method: "PATCH", body: {} });
   assert.equal(marked.response.status, 200);
+  const directApproval = await request(`/api/hr/leaves/${vacation.data.id}/action`, {
+    method: "POST", body: { action: "approve", reason: "Autorización administrativa de prueba." },
+  });
+  assert.equal(directApproval.response.status, 200);
+  assert.equal(directApproval.data.status, "approved");
+  assert.equal(directApproval.data.administrativeOverride, true);
+  const approvedWorkflow = app.db.prepare(`SELECT step_type, status, decided_by_user_id
+    FROM hr_leave_workflow_steps WHERE leave_request_id = ? ORDER BY step_order`).all(vacation.data.id);
+  assert.deepEqual(approvedWorkflow.map((step) => step.status), ["approved", "approved"]);
+  assert.equal(approvedWorkflow.every((step) => step.decided_by_user_id === loginData.user.id), true);
+  const inboxAfterApproval = await request("/api/notifications");
+  assert.equal(inboxAfterApproval.data.actionItems.some((item) => item.entityId === vacation.data.id), false);
 
   const deactivatedPerson = await request(`/api/hr/people/${hrPerson.data.id}/action`, {
     method: "POST",

@@ -920,12 +920,17 @@ export function leaveAction(db, id, body, userId) {
     close: [["approved"], "closed"],
   };
   if (!transitions[action] || !transitions[action][0].includes(row.status)) throw new HrError(409, "La solicitud no admite esa acción.");
-  if (["approve", "reject"].includes(action) && row.current_approval_step === "manager")
+  const managerOverride = ["approve", "reject"].includes(action)
+    && row.current_approval_step === "manager" && body.administrativeOverride === true;
+  if (["approve", "reject"].includes(action) && row.current_approval_step === "manager" && !managerOverride)
     throw new HrError(409, "La solicitud requiere primero la autorización del Jefe de área.");
   const reason = text(body.reason, 800);
   if (action === "reject" && reason.length < 5) throw new HrError(400, "Captura el motivo del rechazo.");
   const status = transitions[action][1];
   transaction(db, () => {
+    if (managerOverride) db.prepare(`UPDATE hr_leave_workflow_steps SET status = ?, decided_by_user_id = ?,
+      decision_reason = ?, decided_at = CURRENT_TIMESTAMP WHERE leave_request_id = ? AND step_type = 'manager'`)
+      .run(status, userId, reason || "Resuelta directamente por Administrador RH.", id);
     db.prepare(`UPDATE hr_leave_requests SET status = ?, current_approval_step = CASE WHEN ? IN ('approved','rejected') THEN 'completed' ELSE current_approval_step END,
       rejection_reason = CASE WHEN ? = 'rejected' THEN ? ELSE rejection_reason END,
       approved_by = CASE WHEN ? IN ('approved','rejected') THEN ? ELSE approved_by END, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -943,7 +948,7 @@ export function leaveAction(db, id, body, userId) {
     db.prepare("UPDATE employees SET status = 'leave', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.employee_id);
   if (["closed", "cancelled"].includes(status))
     db.prepare("UPDATE employees SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'leave'").run(row.employee_id);
-  return { id, folio: row.folio, status };
+  return { id, folio: row.folio, status, administrativeOverride: managerOverride };
 }
 
 export function managerLeaveAction(db, id, managerEmployeeId, body) {

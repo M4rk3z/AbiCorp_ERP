@@ -2804,12 +2804,16 @@ export function createTenantApplication(options = {}) {
   async function hrLeaveAction(req, res, context, id) {
     const body = await readJson(req);
     requirePermission(context, ["approve", "reject"].includes(body.action) ? "hr.approve" : "hr.operate");
-    const leave = db.prepare("SELECT employee_id FROM hr_leave_requests WHERE id = ?").get(id);
+    const leave = db.prepare("SELECT employee_id, current_approval_step FROM hr_leave_requests WHERE id = ?").get(id);
     if (leave) assertEmployeeAccess(db, context.user.id, leave.employee_id, HttpError);
     const identity = laborIdentityForUser(db, context.user.id);
     if (["approve", "reject"].includes(body.action) && identity && identity.identityType !== "manager")
       throw new HttpError(403, "Solamente el Administrador RH puede aprobar o rechazar solicitudes.");
-    const result = hr.leaveAction(db, id, body, context.user.id);
+    const result = hr.leaveAction(db, id, {
+      ...body,
+      administrativeOverride: ["approve", "reject"].includes(body.action)
+        && leave?.current_approval_step === "manager",
+    }, context.user.id);
     const portalMessages = {
       approve: ["Solicitud aprobada", `Tu solicitud ${result.folio} fue aprobada.`],
       reject: ["Solicitud rechazada", `Tu solicitud ${result.folio} fue rechazada: ${body.reason || "Consulta a Recursos Humanos."}`],
@@ -3159,7 +3163,34 @@ export function createTenantApplication(options = {}) {
     requirePermission(context, "notifications.view");
     const notifications = db.prepare(`SELECT id, title, message, type, is_read, created_at, read_at
       FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30`).all(context.user.id);
-    sendJson(res, 200, { notifications });
+    sendJson(res, 200, { notifications, actionItems: notificationActionItems(context) });
+  }
+
+  function notificationActionItems(context) {
+    const actionItems = [];
+    if (context.user.permissions.includes("hr.approve")) {
+      const visible = visibleEmployeeIds(db, context.user.id);
+      const visibleIds = visible === null ? [] : [...visible];
+      const employeeFilter = visible === null ? ""
+        : visibleIds.length ? `AND l.employee_id IN (${visibleIds.map(() => "?").join(",")})`
+          : "AND 1 = 0";
+      const leaves = db.prepare(`SELECT l.id, l.folio, l.leave_type, l.start_date, l.end_date,
+        l.current_approval_step, l.created_at, e.id AS employee_id, e.full_name AS employee_name
+        FROM hr_leave_requests l JOIN employees e ON e.id = l.employee_id
+        WHERE l.status = 'submitted' ${employeeFilter}
+        ORDER BY l.created_at DESC, l.id DESC LIMIT 30`).all(...visibleIds);
+      for (const leave of leaves) actionItems.push({
+        id: `hr-leave-${leave.id}`,
+        entityId: Number(leave.id),
+        entityType: "hr_leave_request",
+        title: `${leave.folio} · ${leave.employee_name}`,
+        message: `${leave.leave_type === "vacation" ? "Vacaciones" : leave.leave_type === "incapacity" ? "Incapacidad" : "Permiso"} del ${leave.start_date} al ${leave.end_date} · ${leave.current_approval_step === "manager" ? "requiere decisión administrativa" : "pendiente de Recursos Humanos"}.`,
+        type: "warning",
+        targetView: "hr_control",
+        created_at: leave.created_at,
+      });
+    }
+    return actionItems;
   }
 
   async function createNotification(req, res, context) {

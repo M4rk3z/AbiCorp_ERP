@@ -1,6 +1,6 @@
 // Módulo de Recursos Humanos cargado únicamente al abrir su sección.
 export function createHrModule(context) {
-  const { $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials } = context;
+  const { $, $$, API_BASE, HR_CONTROL_CACHE_MS, state, api, hasPermission, pageContent, entityDialog, confirmAction, requestActionText, beginPageRender, renderIsCurrent, escapeHtml, escapeAttribute, toast, formatDate, formatDateOnly, todayInput, inventoryNumber, emptyMarkup, workforceStatus, hrEmployment, hrShift, hrShiftCatalogSummary, hrParsedShiftSchedule, hrShiftSchedule, hrVacationSeniority, hrServiceYears, hrAutomaticVacationPlan, fileToBase64, downloadAuthenticatedFile, automaticCodeBanner, checkbox, initials, loadNotifications } = context;
 
   async function renderHr() {
     const token = beginPageRender();
@@ -57,12 +57,30 @@ export function createHrModule(context) {
       try {
         const action = button.dataset.hrAction;
         let reason = action === "approve" ? "Autorizado por Administrador RH." : "";
+        if (action === "approve") {
+          const direct = button.dataset.hrStep === "manager";
+          const confirmed = await confirmAction({
+            eyebrow: "SOLICITUD DE PERSONAL",
+            title: "Aprobar solicitud",
+            message: direct
+              ? "Esta solicitud sigue pendiente del jefe de área. Como Administrador RH puedes autorizarla directamente y cerrar ambas revisiones."
+              : "La solicitud quedará autorizada y se aplicarán sus efectos correspondientes.",
+            confirmLabel: direct ? "Aprobar directamente" : "Aprobar solicitud",
+          });
+          if (!confirmed) return;
+        }
         if (action === "reject") { reason = await requestActionText({ eyebrow: "SOLICITUD DE PERSONAL", title: "Rechazar solicitud", message: "Explica el motivo para que el colaborador pueda consultarlo y, si corresponde, corregir su solicitud.", fieldLabel: "Motivo del rechazo", confirmLabel: "Rechazar solicitud", tone: "danger" }); if (!reason) return; }
         await api("/api/hr/leaves/" + button.dataset.hrId + "/action", { method: "POST", body: { action, reason } });
-        toast("Solicitud actualizada."); await renderHr();
+        toast("Solicitud actualizada."); await Promise.all([renderHr(), loadNotifications()]);
       } catch (error) { toast(error.message, "error"); }
     });
     $$("[data-hr-print]").forEach((button) => button.onclick = () => printHrLeaveReceipt(Number(button.dataset.hrPrint)));
+    const focusedRequest = state.hrApprovalFocusId ? $('[data-hr-request-row="' + state.hrApprovalFocusId + '"]') : null;
+    if (focusedRequest) {
+      focusedRequest.classList.add("focused");
+      requestAnimationFrame(() => focusedRequest.scrollIntoView({ behavior: "smooth", block: "center" }));
+      state.hrApprovalFocusId = null;
+    }
   }
   
   let hrComplianceModulePromise = null;
@@ -804,7 +822,12 @@ export function createHrModule(context) {
   
   function hrUnifiedDashboard(control) {
     const pending = control.leaves.filter((row) => row.status === "submitted");
-    const recentLeaves = control.leaves.slice(0, 8);
+    const focusId = Number(state.hrApprovalFocusId || 0);
+    const recentLeaves = [...control.leaves].sort((left, right) => {
+      const leftPriority = Number(left.id) === focusId ? 0 : left.status === "submitted" ? 1 : 2;
+      const rightPriority = Number(right.id) === focusId ? 0 : right.status === "submitted" ? 1 : 2;
+      return leftPriority - rightPriority;
+    }).slice(0, 8);
     const employeeCards = control.people.map((row) => {
       const portrait = row.photo_filename
         ? '<img class="hr-employee-avatar" src="' + API_BASE + '/api/hr/people/' + row.id + '/photo?v=' + encodeURIComponent(row.updated_at || "") + '" alt="Fotografía de ' + escapeAttribute(row.full_name) + '" />'
@@ -839,7 +862,7 @@ export function createHrModule(context) {
       const timeline = hrEmploymentTimeline(row);
       return '<article class="hr-employee-card"><div class="hr-employee-identity">' + portrait + '<div><small>' + escapeHtml(row.employee_number) + '</small><strong>' + escapeHtml(row.full_name) + '</strong><p>' + escapeHtml(row.email || row.phone || "Sin contacto") + '</p></div>' + workforceStatus(row.status) + '</div><div class="hr-employee-work"><div><span>ÁREA Y PUESTO</span><strong>' + escapeHtml(row.area_name || "Sin área") + '</strong><small>' + escapeHtml(row.job_position_name || row.position || "Sin puesto") + '</small></div><div><span>TURNO · ' + escapeHtml(hrEmployment(row.employment_type)) + '</span><strong>' + escapeHtml(shiftTitle) + '</strong><small>' + escapeHtml(shiftDetail) + '</small></div></div><div class="hr-employee-facts"><div><span>' + trackingLabel + '</span><strong>' + escapeHtml(trackingTitle) + '</strong><small>' + escapeHtml(trackingDetail) + '</small></div><div><span>' + escapeHtml(timeline.label) + '</span><strong>' + escapeHtml(timeline.title) + '</strong><small>' + escapeHtml(timeline.detail) + '</small></div></div><div class="hr-employee-manage">' + actions + '</div></article>';
     }).join("");
-    const requestRows = recentLeaves.map((row) => '<div class="hr-request-row"><span class="hr-request-kind">' + hrLeaveSymbol(row.leave_type) + '</span><div><strong>' + escapeHtml(row.employee_name) + ' · ' + escapeHtml(row.folio) + '</strong><small>' + hrLeaveLabel(row.leave_type) + ' · ' + formatDateOnly(row.start_date) + ' — ' + formatDateOnly(row.end_date) + '</small><small>' + (row.current_approval_step === "manager" ? "Pendiente Jefe de área" : row.current_approval_step === "hr" ? "Pendiente Administrador RH" : "Flujo concluido") + (row.coverage?.withinLimit === false ? " · ⚠ Cupo de ausencias excedido" : "") + '</small></div>' + workforceStatus(row.status) + '<div class="hr-request-actions">' + hrLeaveActions(row) + '</div></div>').join("");
+    const requestRows = recentLeaves.map((row) => '<div class="hr-request-row" data-hr-request-row="' + row.id + '"><span class="hr-request-kind">' + hrLeaveSymbol(row.leave_type) + '</span><div><strong>' + escapeHtml(row.employee_name) + ' · ' + escapeHtml(row.folio) + '</strong><small>' + hrLeaveLabel(row.leave_type) + ' · ' + formatDateOnly(row.start_date) + ' — ' + formatDateOnly(row.end_date) + '</small><small>' + (row.current_approval_step === "manager" ? "Pendiente Jefe de área" : row.current_approval_step === "hr" ? "Pendiente Administrador RH" : "Flujo concluido") + (row.coverage?.withinLimit === false ? " · ⚠ Cupo de ausencias excedido" : "") + '</small></div>' + workforceStatus(row.status) + '<div class="hr-request-actions">' + hrLeaveActions(row) + '</div></div>').join("");
     const activityColumn = '<aside class="hr-activity-column"><article class="panel"><div class="panel-head"><div><h3>Solicitudes y ausencias</h3><p>Permisos, vacaciones e incapacidades.</p></div><span>' + pending.length + ' PENDIENTE(S)</span></div><div class="compact-list">' + (requestRows || emptyMarkup("Sin solicitudes", "Las solicitudes creadas desde cada trabajador aparecerán aquí.")) + '</div></article></aside>';
     const addPerson = hasPermission("hr.manage") ? '<button class="button primary small" type="button" data-hr-new="person">＋ Agregar personal</button>' : "";
     const teamColumn = '<section class="panel hr-team-panel"><div class="panel-head"><div><span class="eyebrow">GESTIÓN DESDE LA PERSONA</span><h3>Mi equipo</h3><p>El personal guardado aquí también aparece en Datos Maestros.</p></div><div class="hr-team-head-actions"><span>' + control.people.length + ' PERSONA(S)</span>' + addPerson + '</div></div><div class="hr-team-summary"><div><strong>' + control.indicators.activePeople + '</strong><span>ACTIVOS</span></div><div><strong>' + pending.length + '</strong><span>POR APROBAR</span></div><div><strong>' + control.indicators.staffEntriesMonth + '</strong><span>ALTAS DEL MES</span></div><div><strong>' + inventoryNumber(control.indicators.turnoverRate || 0) + '%</strong><span>ROTACIÓN DEL MES</span></div></div><div class="hr-employee-list">' + (employeeCards || emptyMarkup("No hay personal registrado", "Agrega el primer expediente para comenzar.")) + '</div></section>';
@@ -1013,9 +1036,9 @@ export function createHrModule(context) {
   
   function hrLeaveActions(row) {
     const actions = ['<button class="link-button" type="button" data-hr-print="' + row.id + '">Imprimir</button>'];
-    if (row.status === "submitted" && row.current_approval_step === "hr" && hasPermission("hr.approve")) {
-      actions.push('<button class="link-button" data-hr-action="approve" data-hr-id="' + row.id + '">Aprobar</button>');
-      actions.push('<button class="link-button danger-text" data-hr-action="reject" data-hr-id="' + row.id + '">Rechazar</button>');
+    if (row.status === "submitted" && hasPermission("hr.approve")) {
+      actions.push('<button class="button primary small" data-hr-action="approve" data-hr-step="' + escapeAttribute(row.current_approval_step) + '" data-hr-id="' + row.id + '">Aprobar</button>');
+      actions.push('<button class="button ghost small danger-text" data-hr-action="reject" data-hr-step="' + escapeAttribute(row.current_approval_step) + '" data-hr-id="' + row.id + '">Rechazar</button>');
     }
     if (row.status === "approved" && hasPermission("hr.operate"))
       actions.push('<button class="link-button" data-hr-action="close" data-hr-id="' + row.id + '">Cerrar</button>');
