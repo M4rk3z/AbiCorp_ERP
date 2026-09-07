@@ -646,24 +646,40 @@ export function createHrModule(context) {
     const isDescription = documentType === "description";
     const title = isDescription ? "Descriptivo de puesto" : "Perfil de puesto";
     const question = isDescription ? "¿Qué hace este puesto?" : "¿Quién puede desempeñar este puesto?";
-    const detailRows = person ? [
-      ["Colaborador de referencia", person.full_name], ["Folio", person.employee_number],
-      ["Empresa", person.company_name], ["Centro de trabajo", person.work_center_name],
-      ["Departamento", person.department_name], ["Área", person.area_name],
-      ["Jefe inmediato", person.manager_name], ["Turno", person.shift_name || hrShift(person.shift)],
-    ].filter(([, value]) => value).map(([label, value]) => '<div><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>').join("") : "";
+    const issueDate = new Intl.DateTimeFormat("es-MX", { dateStyle: "long" }).format(new Date());
+    const stylesheetUrl = escapeAttribute(new URL("../hr-position-document.css?v=20260907-01", import.meta.url).href);
+    const logoUrl = escapeAttribute(new URL("../assets/abicorp-logo.png", import.meta.url).href);
+    const documentCode = (position.code || "SIN-FOLIO") + (isDescription ? "-DES" : "-PER");
+    const identityRows = [
+      ["Nombre del puesto", position.name], ["Código del puesto", position.code || "Sin folio"],
+      ["Empresa", person?.company_name || "Aplicación general"], ["Centro de trabajo", person?.work_center_name || "Todos los centros"],
+      ["Departamento", person?.department_name || "Sin departamento asignado"], ["Área", person?.area_name || "Sin área asignada"],
+      ["Ocupante de referencia", person?.full_name || "Documento general del puesto"], ["Número de empleado", person?.employee_number || "No aplica"],
+      ["Turno", person ? person.shift_name || hrShift(person.shift) : "Según asignación"],
+    ].map(([label, value]) => '<div class="identity-cell"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>').join("");
     const requirementRows = [
       ["Estudios", position.profile_education],
       ["Experiencia", position.profile_experience],
       ["Conocimientos", position.profile_knowledge],
       ["Habilidades", position.profile_skills],
       ["Competencias", position.profile_competencies],
-    ].map(([label, value]) => '<div><span>' + label + '</span><p>' + escapeHtml(value || "Sin definir").replace(/\r?\n/g, "<br>") + '</p></div>').join("");
+    ].map(([label, value]) => '<div class="requirement-row"><div class="requirement-label">' + label + '</div><div class="requirement-value">' + escapeHtml(value || "Pendiente de definir") + '</div></div>').join("");
+    const organization = [
+      ["Reporta a", person?.manager_name || "Según estructura autorizada"],
+      ["Área de adscripción", person?.area_name || person?.department_name || "Por definir"],
+      ["Jornada", person ? person.shift_name || hrShift(person.shift) : "Según asignación"],
+    ].map(([label, value]) => '<div><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>').join("");
     const documentBody = isDescription
-      ? '<section class="document"><h2>Funciones, responsabilidades, objetivos, autoridad y relaciones de trabajo</h2><p>' + escapeHtml(position.description || "Sin descriptivo registrado.").replace(/\r?\n/g, "<br>") + '</p></section>'
-      : '<section class="requirements">' + requirementRows + '</section>';
-    printWindow.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>' + title + ' · ' + escapeHtml(position.name) + '</title><style>@page{size:letter;margin:18mm}*{box-sizing:border-box}body{margin:0;color:#173d31;font-family:Arial,sans-serif}header{display:flex;justify-content:space-between;gap:24px;align-items:end;border-bottom:4px solid #c8f36b;padding-bottom:18px}header small,span{color:#687a72;font-size:11px;letter-spacing:.08em;text-transform:uppercase}h1{margin:6px 0 0;font:700 28px Georgia,serif}header b{border:1px solid #bdd0c6;padding:8px 12px;font:700 12px monospace}.question{margin:8px 0 0;color:#63766c;font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:24px 0}.grid div,.requirements div{border:1px solid #dce5e0;padding:12px}.grid span,.grid strong{display:block}.grid strong{margin-top:5px;font-size:13px}.document{margin-top:24px;border-left:4px solid #c8f36b;padding:20px;background:#f7faf8}.document h2{margin:0 0 14px;font:700 17px Georgia,serif}.document p,.requirements p{margin:0;color:#344d43;font-size:13px;line-height:1.7}.requirements{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:24px}.requirements div:last-child{grid-column:1/-1}.requirements p{margin-top:8px}.foot{margin-top:36px;padding-top:12px;border-top:1px solid #dce5e0;color:#7a8982;font-size:10px}@media print{button{display:none}}</style></head><body><header><div><small>ABICORP · RECURSOS HUMANOS</small><h1>' + title + '</h1><p class="question">' + question + '</p></div><b>' + escapeHtml(position.code || "SIN FOLIO") + '</b></header><section class="grid"><div><span>Nombre del puesto</span><strong>' + escapeHtml(position.name) + '</strong></div>' + detailRows + '</section>' + documentBody + '<p class="foot">Documento generado desde Gestión de personas el ' + escapeHtml(new Date().toLocaleDateString("es-MX")) + '.</p><script>window.addEventListener("load",()=>setTimeout(()=>window.print(),120));<\/script></body></html>');
+      ? '<section class="document-section"><div class="section-heading"><b>02</b><div><span>Descriptivo de puesto</span><strong>Propósito, funciones y responsabilidades</strong></div></div><div class="content-panel"><p>' + escapeHtml(position.description || "El descriptivo del puesto está pendiente de documentar.") + '</p></div></section><section class="document-section"><div class="section-heading"><b>03</b><div><span>Relaciones de trabajo</span><strong>Ubicación dentro de la organización</strong></div></div><div class="organization-strip">' + organization + '</div></section>'
+      : '<section class="document-section"><div class="section-heading"><b>02</b><div><span>Perfil del ocupante</span><strong>Requisitos y competencias requeridas</strong></div></div><div class="requirements-table">' + requirementRows + '</div></section>';
+    printWindow.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + title + ' · ' + escapeHtml(position.name) + '</title><link rel="stylesheet" href="' + stylesheetUrl + '"></head><body><main class="position-document"><header class="document-brand"><div class="document-brand-main"><img src="' + logoUrl + '" alt=""><div><strong>ABICORP</strong><span>ERP MODULAR · RECURSOS HUMANOS</span></div></div><div class="document-control"><div><span>Código</span><strong>' + escapeHtml(documentCode) + '</strong></div><div><span>Versión</span><strong>1.0</strong></div><div><span>Estado</span><strong>Vigente</strong></div></div></header><section class="document-title"><div><span class="document-kicker">DOCUMENTACIÓN ORGANIZACIONAL</span><h1>' + title + '</h1><p>' + escapeHtml(position.name) + '</p></div><aside class="document-purpose"><span>Propósito del documento</span><strong>' + question + '</strong></aside></section><section class="document-section"><div class="section-heading"><b>01</b><div><span>Identificación</span><strong>Datos generales del puesto</strong></div></div><div class="identity-grid">' + identityRows + '</div></section>' + documentBody + '<section class="signatures"><div class="signature"><span>Elaboró</span><strong>Recursos Humanos</strong></div><div class="signature"><span>Revisó</span><strong>' + escapeHtml(person?.manager_name || "Jefatura inmediata") + '</strong></div><div class="signature"><span>Autorizó</span><strong>Dirección / Gerencia</strong></div></section><footer class="document-footer"><p>Documento generado desde Gestión de personas el ' + escapeHtml(issueDate) + '. La copia impresa se considera no controlada salvo que cuente con firmas de autorización.</p><span>' + escapeHtml(documentCode) + ' · V1.0</span></footer></main><nav class="document-toolbar" aria-label="Acciones del documento"><button type="button" data-position-print-close>Cerrar</button><button type="button" data-position-print-action>Imprimir / Guardar PDF</button></nav></body></html>');
     printWindow.document.close();
+    const bindPrintActions = () => {
+      printWindow.document.querySelector("[data-position-print-close]")?.addEventListener("click", () => printWindow.close());
+      printWindow.document.querySelector("[data-position-print-action]")?.addEventListener("click", () => printWindow.print());
+    };
+    if (printWindow.document.readyState === "loading") printWindow.document.addEventListener("DOMContentLoaded", bindPrintActions, { once: true });
+    else bindPrintActions();
   }
   
   function hrAnalyticsDashboard(control) {

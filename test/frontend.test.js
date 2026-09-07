@@ -12,6 +12,7 @@ const portalHtml = readFileSync(new URL("../public/portal.html", import.meta.url
 const portalSource = readFileSync(new URL("../public/portal.js", import.meta.url), "utf8");
 const portalStyles = readFileSync(new URL("../public/portal.css", import.meta.url), "utf8");
 const hrReceiptStyles = readFileSync(new URL("../public/hr-receipt.css", import.meta.url), "utf8");
+const hrPositionDocumentStyles = readFileSync(new URL("../public/hr-position-document.css", import.meta.url), "utf8");
 
 test("la interfaz versiona sus archivos para evitar código obsoleto en caché", () => {
   assert.match(html, /styles\.css\?v=\d{8}-\d+/);
@@ -31,7 +32,7 @@ test("la aplicacion operativa usa un sistema consistente de esquinas redondeadas
   assert.match(stylesSource, /\.organization-structure-scene article,[^]*border-radius: var\(--radius-card\)/);
   assert.match(stylesSource, /\.page-content :where\(/);
   assert.match(html, /styles\.css\?v=20260907-02/);
-  assert.match(html, /app\.js\?v=20260907-02/);
+  assert.match(html, /app\.js\?v=20260907-03/);
 });
 
 test("la portada usa la marca y presenta los módulos en un carrusel", () => {
@@ -580,7 +581,7 @@ test("la interfaz reutiliza respuestas recientes y RH carga control y catálogos
   assert.match(source, /const control = await api\("\/api\/hr\/control", \{ cacheTtlMs: HR_CONTROL_CACHE_MS \}\)/);
   assert.match(source, /const options = control\.options \|\| await api\("\/api\/hr\/options"\)/);
   assert.match(source, /api\("\/api\/notifications", \{ cache: false \}\)/);
-  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260907-01"\)/);
+  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260907-02"\)/);
   assert.match(hrSource, /export function createHrModule/);
   assert.match(hrSource, /import\("\.\/hr-compliance\.js\?v=20260821-01"\)/);
   assert.doesNotMatch(appSource, /\bformatDateTime\b/);
@@ -651,6 +652,15 @@ test("el expediente de RH usa pestañas internas y abre la sección con errores"
   assert.match(appSource, /document-expiry-field/);
   assert.match(hrSource, /Documento integrado al expediente/);
   assert.match(hrSource, /function printHrPositionProfile/);
+  assert.match(hrSource, /hr-position-document\.css\?v=20260907-01/);
+  assert.doesNotMatch(hrSource, /<style>@page/);
+  assert.match(hrSource, /class="document-control"/);
+  assert.match(hrSource, /class="identity-grid"/);
+  assert.match(hrSource, /class="signatures"/);
+  assert.match(hrSource, /data-position-print-action/);
+  assert.match(hrPositionDocumentStyles, /\.position-document/);
+  assert.match(hrPositionDocumentStyles, /@media print/);
+  assert.match(hrPositionDocumentStyles, /print-color-adjust: exact/);
   assert.match(hrSource, /data-print-position-document="description">Imprimir descriptivo/);
   assert.match(hrSource, /data-print-position-document="profile">Imprimir perfil/);
   assert.match(hrSource, /function hrPositionProfileMarkup/);

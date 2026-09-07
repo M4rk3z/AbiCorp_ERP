@@ -1,0 +1,263 @@
+@page {
+  size: letter;
+  margin: 12mm;
+}
+
+:root {
+  color-scheme: light;
+  font-family: Arial, Helvetica, sans-serif;
+  color: #173d31;
+  background: #edf2ee;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #edf2ee;
+  color: #173d31;
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.position-document {
+  width: 216mm;
+  min-height: 279mm;
+  margin: 20px auto 82px;
+  padding: 14mm 15mm 12mm;
+  background: #fff;
+  box-shadow: 0 14px 42px rgba(19, 61, 45, .14);
+}
+
+.document-brand {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #b9cbbf;
+}
+
+.document-brand-main {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.document-brand img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+}
+
+.document-brand strong,
+.document-brand span,
+.document-control span,
+.document-control strong { display: block; }
+
+.document-brand strong {
+  color: #0e4a35;
+  font-size: 17px;
+  letter-spacing: .08em;
+}
+
+.document-brand span {
+  margin-top: 3px;
+  color: #668075;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .16em;
+}
+
+.document-control {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  border: 1px solid #c8d6ce;
+}
+
+.document-control div { padding: 6px 9px; }
+.document-control div + div { border-left: 1px solid #c8d6ce; }
+.document-control span { color: #71837b; font-size: 7px; font-weight: 800; letter-spacing: .08em; }
+.document-control strong { margin-top: 3px; color: #173d31; font-size: 9px; }
+
+.document-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: end;
+  padding: 18px 0 16px;
+  border-bottom: 5px solid #c8f36b;
+}
+
+.document-kicker,
+.document-purpose span,
+.section-heading span,
+.identity-cell span,
+.requirement-label,
+.signature span,
+.document-footer span {
+  color: #667b72;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.document-title h1 {
+  margin: 5px 0 0;
+  color: #123f2f;
+  font: 700 26px Georgia, "Times New Roman", serif;
+}
+
+.document-title p {
+  margin: 6px 0 0;
+  color: #557065;
+  font-size: 10px;
+}
+
+.document-purpose {
+  min-width: 150px;
+  padding: 10px 12px;
+  border: 1px solid #bfd0c6;
+  background: #f5f9f6;
+}
+
+.document-purpose strong { display: block; margin-top: 5px; font-size: 11px; line-height: 1.35; }
+
+.document-section {
+  margin-top: 16px;
+  break-inside: avoid;
+}
+
+.section-heading {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.section-heading b {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  background: #154c37;
+  color: #c8f36b;
+  font-size: 9px;
+}
+
+.section-heading strong { display: block; margin-top: 2px; font: 700 13px Georgia, "Times New Roman", serif; }
+
+.identity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #cbd8d1;
+}
+
+.identity-cell {
+  min-height: 48px;
+  padding: 9px 10px;
+  border-right: 1px solid #dbe4df;
+  border-bottom: 1px solid #dbe4df;
+}
+
+.identity-cell:nth-child(3n) { border-right: 0; }
+.identity-cell:nth-last-child(-n + 3) { border-bottom: 0; }
+.identity-cell strong { display: block; margin-top: 5px; color: #203f34; font-size: 10px; line-height: 1.3; }
+
+.content-panel {
+  min-height: 145px;
+  padding: 15px 17px;
+  border: 1px solid #cbd8d1;
+  border-left: 5px solid #c8f36b;
+  background: #f8faf8;
+}
+
+.content-panel p {
+  margin: 0 0 8px;
+  color: #2d4b40;
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.content-panel p:last-child { margin-bottom: 0; }
+
+.requirements-table { border: 1px solid #cbd8d1; }
+
+.requirement-row {
+  display: grid;
+  grid-template-columns: 31% minmax(0, 1fr);
+  min-height: 55px;
+}
+
+.requirement-row + .requirement-row { border-top: 1px solid #dbe4df; }
+.requirement-label { padding: 12px; background: #f0f5f1; color: #315848; }
+.requirement-value { padding: 11px 13px; color: #2d4b40; font-size: 10.5px; line-height: 1.5; white-space: pre-line; }
+
+.organization-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #cbd8d1;
+  background: #fff;
+}
+
+.organization-strip div { padding: 10px 12px; }
+.organization-strip div + div { border-left: 1px solid #dbe4df; }
+.organization-strip span { display: block; color: #72847c; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.organization-strip strong { display: block; margin-top: 5px; font-size: 10px; line-height: 1.3; }
+
+.signatures {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px;
+  margin-top: 38px;
+  break-inside: avoid;
+}
+
+.signature { padding-top: 26px; border-top: 1px solid #71847a; text-align: center; }
+.signature strong { display: block; margin-top: 4px; font-size: 9px; }
+
+.document-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 22px;
+  padding-top: 8px;
+  border-top: 1px solid #cbd8d1;
+}
+
+.document-footer p { margin: 0; color: #718078; font-size: 7.5px; line-height: 1.45; }
+.document-footer span { color: #315848; white-space: nowrap; }
+
+.document-toolbar {
+  position: fixed;
+  right: 22px;
+  bottom: 20px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #c7d5cd;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 8px 28px rgba(16, 55, 41, .18);
+}
+
+.document-toolbar button {
+  min-height: 38px;
+  border: 1px solid #b7c9bf;
+  padding: 8px 14px;
+  background: #fff;
+  color: #173d31;
+  font: 700 11px Arial, sans-serif;
+  cursor: pointer;
+}
+
+.document-toolbar button:last-child { border-color: #154c37; background: #154c37; color: #fff; }
+
+@media print {
+  body { background: #fff; }
+  .position-document { width: auto; min-height: auto; margin: 0; padding: 0; box-shadow: none; }
+  .document-toolbar { display: none; }
+}
+

@@ -28,6 +28,9 @@ test("flujo principal del núcleo ERP", async (t) => {
   const applicationScript = await fetch(`${baseUrl}/app.js?v=test`);
   assert.equal(applicationScript.status, 200);
   assert.equal(applicationScript.headers.get("cache-control"), "no-cache");
+  const positionDocumentStyles = await fetch(`${baseUrl}/hr-position-document.css?v=test`);
+  assert.equal(positionDocumentStyles.status, 200);
+  assert.match(positionDocumentStyles.headers.get("content-type"), /text\/css/);
 
   const rejected = await fetch(`${baseUrl}/api/auth/login`, {
     method: "POST",
