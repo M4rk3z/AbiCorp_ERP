@@ -202,6 +202,8 @@ function bindGlobalEvents() {
   $("#logout-button").addEventListener("click", logout);
   $(".notification-button").addEventListener("click", () => hasPermission("notifications.view") && navigate("notifications"));
   $("#mobile-menu").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+  $("#workspace-search-input").addEventListener("input", filterWorkspaceNavigation);
+  $("#workspace-search-input").addEventListener("keydown", handleWorkspaceSearchKey);
   $("#main-nav").addEventListener("click", (event) => {
     const toggle = event.target.closest(".nav-group-toggle");
     if (toggle) {
@@ -326,6 +328,37 @@ function showApplication() {
   renderNavigation();
   startHeaderClock();
   loadNotifications();
+}
+
+function filterWorkspaceNavigation(event) {
+  const query = String(event.currentTarget.value || "").trim().toLocaleLowerCase("es");
+  const navigation = $("#main-nav");
+  $$("[data-view]", navigation).forEach((item) => {
+    item.classList.toggle("search-hidden", Boolean(query) && !item.textContent.toLocaleLowerCase("es").includes(query));
+  });
+  $$('[data-nav-group]', navigation).forEach((group) => {
+    const groupMatches = Boolean(query) && $(".nav-group-toggle", group)?.textContent.toLocaleLowerCase("es").includes(query);
+    if (groupMatches) $$(".nav-item:not(.hidden)", group).forEach((item) => item.classList.remove("search-hidden"));
+    const hasMatch = Boolean($(".nav-item:not(.hidden):not(.search-hidden)", group));
+    group.classList.toggle("search-hidden", Boolean(query) && !hasMatch);
+    if (query && hasMatch) setNavGroupOpen(group, true);
+  });
+  if (!query) openNavGroupForView(state.currentView);
+}
+
+function handleWorkspaceSearchKey(event) {
+  if (event.key === "Escape") {
+    event.currentTarget.value = "";
+    filterWorkspaceNavigation({ currentTarget: event.currentTarget });
+    event.currentTarget.blur();
+    return;
+  }
+  if (event.key !== "Enter") return;
+  const firstMatch = $("#main-nav .nav-item:not(.hidden):not(.search-hidden)");
+  if (!firstMatch) return;
+  event.preventDefault();
+  navigate(firstMatch.dataset.view);
+  $(".sidebar").classList.remove("open");
 }
 
 function confirmAction(options = {}) {
