@@ -665,7 +665,10 @@ async function navigate(view) {
     if (operationalTaskModuleByView[view] && hasPermission("tasks.view")) {
       await appendOperationalTaskPanel(operationalTaskModuleByView[view], view);
     }
-    pageContent.focus();
+    // Mantiene el foco accesible sin permitir que el navegador coloque el
+    // contenido debajo de la cabecera fija al cambiar de módulo.
+    pageContent.focus({ preventScroll: true });
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   } catch (error) {
     if (state.currentView === view) pageContent.innerHTML = errorState(error.message);
   } finally {
