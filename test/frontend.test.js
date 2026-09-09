@@ -31,8 +31,8 @@ test("la aplicacion operativa usa un sistema consistente de esquinas redondeadas
   assert.match(stylesSource, /\.master-command,[^]*border-radius: var\(--radius-panel\)/);
   assert.match(stylesSource, /\.organization-structure-scene article,[^]*border-radius: var\(--radius-card\)/);
   assert.match(stylesSource, /\.page-content :where\(/);
-  assert.match(html, /styles\.css\?v=20260909-01/);
-  assert.match(html, /app\.js\?v=20260909-01/);
+  assert.match(html, /styles\.css\?v=20260909-02/);
+  assert.match(html, /app\.js\?v=20260909-02/);
 });
 
 test("la portada usa la marca y presenta los módulos en un carrusel", () => {
@@ -55,6 +55,19 @@ test("el login detecta la empresa sin pedirla al usuario", () => {
   assert.match(source, /\["\/api\/companies", "\/api\/auth\/login"\]\.includes\(path\)/);
   assert.match(html, /<span>Entrar<\/span><span aria-hidden="true">→<\/span>/);
   assert.doesNotMatch(html, /Entrar al sistema/);
+});
+
+test("el ERP usa un acceso y espacio de trabajo claros con búsqueda y navegación violeta", () => {
+  assert.match(html, /id="workspace-search-input"[^>]+placeholder="Buscar módulos y herramientas/);
+  assert.match(appSource, /function filterWorkspaceNavigation/);
+  assert.match(appSource, /function handleWorkspaceSearchKey/);
+  assert.match(appSource, /search-hidden/);
+  assert.match(stylesSource, /Espacio de trabajo claro con navegación violeta/);
+  assert.match(stylesSource, /\.login-screen \.login-story/);
+  assert.match(stylesSource, /linear-gradient\(145deg, #4c1d95, #6428cb/);
+  assert.match(stylesSource, /\.app-shell \.nav-item\.active/);
+  assert.match(stylesSource, /linear-gradient\(135deg, #6731df, #7b3ff1\)/);
+  assert.match(stylesSource, /\.workspace-search:focus-within/);
 });
 
 test("el cambio de contraseña permite mostrar cada campo", () => {
