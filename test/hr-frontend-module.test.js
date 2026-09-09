@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createHrModule } from "../public/modules/hr.js";
 
@@ -54,4 +55,17 @@ test("Recursos Humanos se carga como módulo independiente y puede renderizar su
   assert.match(pageContent.innerHTML, /Pulso de Recursos Humanos/);
   assert.equal(state.hrControl, control);
   assert.equal(state.hrOptions, options);
+});
+
+test("la portada de Recursos Humanos prioriza acciones y métricas legibles", () => {
+  const source = readFileSync(new URL("../public/modules/hr.js", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(source, /function hrCommandActions/);
+  assert.match(source, /data-hr-new="person">＋ Agregar personal/);
+  assert.match(source, /aria-label="Herramientas de Recursos Humanos"/);
+  assert.match(source, /aria-label="Resumen operativo de Recursos Humanos"/);
+  assert.match(source, /MOVIMIENTOS DEL MES/);
+  assert.match(styles, /\.hr-overview-grid/);
+  assert.match(styles, /\.hr-command-links/);
+  assert.match(styles, /@media \(max-width: 680px\)[^]*\.hr-overview-grid \{ grid-template-columns: 1fr; \}/);
 });

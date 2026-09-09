@@ -31,8 +31,8 @@ test("la aplicacion operativa usa un sistema consistente de esquinas redondeadas
   assert.match(stylesSource, /\.master-command,[^]*border-radius: var\(--radius-panel\)/);
   assert.match(stylesSource, /\.organization-structure-scene article,[^]*border-radius: var\(--radius-card\)/);
   assert.match(stylesSource, /\.page-content :where\(/);
-  assert.match(html, /styles\.css\?v=20260907-02/);
-  assert.match(html, /app\.js\?v=20260907-03/);
+  assert.match(html, /styles\.css\?v=20260909-01/);
+  assert.match(html, /app\.js\?v=20260909-01/);
 });
 
 test("la portada usa la marca y presenta los módulos en un carrusel", () => {
@@ -270,9 +270,9 @@ test("seguridad y recursos humanos comparten incapacidades y control operativo",
   assert.match(source, /safety-ppe-station/);
   assert.match(source, /safety-shield/);
   assert.match(source, /hrPeopleScene/);
-  assert.match(source, /hr-team-console/);
-  assert.match(source, /hr-request-console/);
-  assert.match(source, /hr-attendance-console/);
+  assert.match(source, /hr-overview-card requests/);
+  assert.match(source, /hr-overview-card movements/);
+  assert.match(source, /hr-overview-card turnover/);
   assert.match(source, /data-safety-stage/);
   assert.doesNotMatch(source, /data-hr-stage/);
   assert.match(source, /hrUnifiedDashboard/);
@@ -581,7 +581,7 @@ test("la interfaz reutiliza respuestas recientes y RH carga control y catálogos
   assert.match(source, /const control = await api\("\/api\/hr\/control", \{ cacheTtlMs: HR_CONTROL_CACHE_MS \}\)/);
   assert.match(source, /const options = control\.options \|\| await api\("\/api\/hr\/options"\)/);
   assert.match(source, /api\("\/api\/notifications", \{ cache: false \}\)/);
-  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260907-02"\)/);
+  assert.match(appSource, /import\("\.\/modules\/hr\.js\?v=20260909-01"\)/);
   assert.match(hrSource, /export function createHrModule/);
   assert.match(hrSource, /import\("\.\/hr-compliance\.js\?v=20260821-01"\)/);
   assert.doesNotMatch(appSource, /\bformatDateTime\b/);

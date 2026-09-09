@@ -4374,6 +4374,127 @@ button.organization-chart-node:hover { border-color: var(--forest); transform: t
 .workforce-insight-grid strong { display: block; margin: 10px 0 7px; color: var(--forest); font: 400 1.25rem Georgia, serif; }
 .workforce-insight-grid p { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.5; }
 
+/* Portada clara y operativa de Recursos Humanos */
+.workforce-command.hr-command {
+  grid-template-columns: minmax(370px, 42%) minmax(0, 58%);
+  min-height: 330px;
+  border: 1px solid #b9cec3;
+  border-radius: var(--radius-panel);
+  background: #0b4432;
+  box-shadow: 0 18px 42px rgba(11, 68, 50, .1);
+}
+.hr-command .workforce-command-copy {
+  padding: 34px 38px;
+  background:
+    radial-gradient(circle at 5% 0, rgba(181, 239, 91, .1), transparent 28%),
+    linear-gradient(145deg, #0a4837, #073c2e);
+}
+.hr-command .workforce-live { color: #c8ded4; }
+.hr-command .workforce-command-copy > p { max-width: 390px; color: #c0d5cc; }
+.hr-command .workforce-command-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+}
+.hr-command .workforce-command-kpis > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 7px;
+  align-items: end;
+  min-width: 0;
+  border: 1px solid rgba(186, 218, 203, .2);
+  border-radius: var(--radius-control);
+  padding: 11px 13px;
+  background: rgba(255, 255, 255, .045);
+}
+.hr-command .workforce-command-kpis span {
+  grid-column: 1 / -1;
+  margin: 0 0 4px;
+  color: #9fc0b2;
+  font-size: .46rem;
+  font-weight: 850;
+  letter-spacing: .1em;
+}
+.hr-command .workforce-command-kpis strong { color: var(--lime); font: 400 1.55rem/1 Georgia, serif; }
+.hr-command .workforce-command-kpis small { padding-bottom: 2px; color: #a9c3b8; font-size: .54rem; }
+.hr-command .workforce-command-actions { display: grid; gap: 10px; margin-top: 16px; }
+.hr-command-primary { display: grid; grid-template-columns: 1.2fr 1fr; gap: 8px; }
+.hr-command-primary .button { width: 100%; min-height: 40px; }
+.hr-command-links { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.hr-command-links button {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid rgba(190, 220, 207, .2);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, .035);
+  color: #d3e3dc;
+  font-size: .59rem;
+  font-weight: 750;
+  text-align: left;
+  transition: border-color .18s ease, background .18s ease, color .18s ease;
+}
+.hr-command-links button span { color: var(--lime); font-size: .72rem; }
+.hr-command-links button:hover { border-color: rgba(181, 239, 91, .6); background: rgba(181, 239, 91, .08); color: white; }
+
+.hr-command .hr-scene {
+  display: flex;
+  flex-direction: column;
+  min-height: 330px;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 82% 8%, rgba(181, 239, 91, .09), transparent 24%),
+    linear-gradient(145deg, #f6faf7, #eaf2ed);
+  color: var(--ink);
+}
+.hr-overview-head { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.hr-overview-head > div { display: grid; gap: 4px; }
+.hr-overview-head span { color: #6b8378; font-size: .48rem; font-weight: 900; letter-spacing: .14em; }
+.hr-overview-head strong { color: var(--forest); font: 400 1.15rem Georgia, serif; }
+.hr-overview-head > small { display: flex; gap: 7px; align-items: center; color: #5f786d; font-size: .52rem; font-weight: 800; }
+.hr-overview-head > small i, .hr-overview-footer i { width: 7px; height: 7px; border-radius: 50%; background: #49a875; box-shadow: 0 0 0 4px rgba(73, 168, 117, .12); }
+.hr-overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; flex: 1; margin-top: 20px; }
+.hr-overview-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 185px;
+  overflow: hidden;
+  border: 1px solid #c4d5cc;
+  border-radius: var(--radius-card);
+  padding: 16px;
+  background: rgba(255, 255, 255, .82);
+  box-shadow: 0 10px 24px rgba(15, 75, 56, .055);
+}
+.hr-overview-number { position: absolute; top: 12px; right: 13px; color: #9fb5aa; font: 800 .45rem ui-monospace, monospace; }
+.hr-overview-card > div { position: relative; z-index: 2; display: flex; min-width: 0; flex-direction: column; align-self: end; }
+.hr-overview-card > div small { color: #668075; font-size: .46rem; font-weight: 900; letter-spacing: .08em; }
+.hr-overview-card > div strong { margin-top: 6px; color: var(--forest); font: 400 1.75rem/1 Georgia, serif; }
+.hr-overview-card > div strong em { color: #688177; font: 750 .53rem ui-sans-serif, system-ui, sans-serif; }
+.hr-overview-card > div p { margin: 5px 0 0; color: #73877f; font-size: .53rem; line-height: 1.35; }
+.hr-overview-visual { position: absolute; top: 35px; right: 16px; left: 16px; height: 65px; }
+.hr-overview-visual.request i { position: absolute; width: 47px; height: 35px; border: 1px solid #9bbcac; border-radius: 3px; background: repeating-linear-gradient(#c7d9d0 0 2px, transparent 2px 8px), white; }
+.hr-overview-visual.request i:first-child { top: 7px; left: 18%; transform: rotate(-6deg); }
+.hr-overview-visual.request i:nth-child(2) { top: 2px; left: 38%; transform: rotate(5deg); }
+.hr-overview-visual.request b { position: absolute; right: 14%; bottom: 3px; display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--lime); color: var(--forest); font-size: .72rem; }
+.hr-overview-visual.movement { display: flex; gap: 7px; align-items: end; justify-content: center; padding-bottom: 5px; }
+.hr-overview-visual.movement i { width: 18px; border-radius: 4px 4px 1px 1px; background: #b9d1c5; }
+.hr-overview-visual.movement i:first-child { height: 28px; }
+.hr-overview-visual.movement i:nth-child(2) { height: 48px; background: var(--forest); }
+.hr-overview-visual.movement i:nth-child(3) { height: 37px; background: var(--lime); }
+.hr-overview-visual.rotation { top: 27px; display: grid; place-items: center; }
+.hr-overview-visual.rotation i { width: 62px; height: 62px; border-radius: 50%; background: conic-gradient(var(--lime) calc(var(--hr-turnover) * 3.6deg), #d6e3dc 0); box-shadow: inset 0 0 0 13px white; }
+.hr-overview-footer { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-top: 16px; color: #6f857b; font-size: .45rem; }
+.hr-overview-footer span { display: flex; gap: 8px; align-items: center; }
+.hr-overview-footer strong { color: #799087; font-size: .42rem; letter-spacing: .08em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hr-overview-head > small i, .hr-overview-footer i { animation: none !important; }
+}
+
 @media (max-width: 1050px) {
   .workforce-command { grid-template-columns: 1fr; }
   .workforce-command-copy { padding: 28px; }
@@ -4391,6 +4512,8 @@ button.organization-chart-node:hover { border-color: var(--forest); transform: t
   .hr-team-panel { grid-column: 1; grid-row: 1; }
   .hr-employee-card { grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(150px, .7fr); }
   .hr-employee-manage { grid-column: 1 / -1; }
+  .workforce-command.hr-command { grid-template-columns: 1fr; }
+  .hr-command .hr-scene { min-height: 300px; }
 }
 @media (max-width: 680px) {
   .workforce-command-copy { padding: 24px 20px; }
@@ -4399,6 +4522,16 @@ button.organization-chart-node:hover { border-color: var(--forest); transform: t
   .hr-team-panel .panel-head { align-items: flex-start; }
   .hr-team-head-actions { width: 100%; justify-content: space-between; }
   .workforce-command-kpis { justify-content: space-between; gap: 18px; }
+  .workforce-command.hr-command { border-radius: var(--radius-card); }
+  .hr-command .workforce-command-copy { padding: 26px 20px; }
+  .hr-command .workforce-command-kpis { gap: 8px; }
+  .hr-command-primary { grid-template-columns: 1fr; }
+  .hr-command-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hr-command .hr-scene { min-height: 0; padding: 22px 18px; }
+  .hr-overview-head { align-items: flex-start; }
+  .hr-overview-grid { grid-template-columns: 1fr; }
+  .hr-overview-card { min-height: 155px; }
+  .hr-overview-footer strong { display: none; }
   .workforce-scene { min-height: 235px; }
   .safety-ppe-station { left: 1%; transform: scale(.78); transform-origin: bottom; }
   .safety-scan { left: 38%; transform: scale(.78); }

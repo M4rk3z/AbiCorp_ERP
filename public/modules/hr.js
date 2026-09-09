@@ -32,7 +32,7 @@ export function createHrModule(context) {
     state.hrOptions = options;
     state.hrControl = control;
     pageContent.innerHTML =
-      '<section class="workforce-command hr-command"><div class="workforce-command-copy"><span class="workforce-live"><i></i>PERSONAL CONECTADO</span><h2>Organiza a tu equipo</h2><p>Expedientes, permisos, vacaciones e incapacidades en un mismo centro.</p><div class="workforce-command-kpis"><div><strong>' + control.indicators.activePeople + '</strong><span>personas activas</span></div><div><strong>' + control.indicators.awayToday + '</strong><span>ausentes hoy</span></div></div><div class="workforce-command-actions">' + (hasPermission("hr.manage") ? '<button class="button ghost light" data-hr-bulk>Carga masiva</button><button class="button ghost light" data-hr-schedules>Visualizar horarios</button><button class="button ghost light" data-hr-portal>Portal colaboradores</button><button class="button ghost light" data-hr-catalogs>⚙ Catálogos</button>' : "") + (hasPermission("hr.compliance.view") ? '<button class="button ghost light" data-hr-compliance>◈ Cumplimiento</button>' : "") + '</div></div>' +
+      '<section class="workforce-command hr-command"><div class="workforce-command-copy"><span class="workforce-live"><i></i>CENTRO DE PERSONAS</span><h2>Organiza a tu equipo</h2><p>Expedientes, asistencia y solicitudes de personal en un espacio claro y conectado.</p><div class="workforce-command-kpis"><div><span>PLANTILLA ACTIVA</span><strong>' + control.indicators.activePeople + '</strong><small>personas</small></div><div><span>AUSENCIAS HOY</span><strong>' + control.indicators.awayToday + '</strong><small>registradas</small></div></div>' + hrCommandActions() + '</div>' +
       hrPeopleScene(control) + '</section>' +
       hrAnalyticsDashboard(control) +
       hrUnifiedDashboard(control);
@@ -81,6 +81,20 @@ export function createHrModule(context) {
       requestAnimationFrame(() => focusedRequest.scrollIntoView({ behavior: "smooth", block: "center" }));
       state.hrApprovalFocusId = null;
     }
+  }
+
+  function hrCommandActions() {
+    const primary = hasPermission("hr.manage")
+      ? '<div class="hr-command-primary"><button class="button workforce-accent" type="button" data-hr-new="person">＋ Agregar personal</button><button class="button ghost light" type="button" data-hr-bulk>Carga masiva</button></div>'
+      : "";
+    const manageLinks = hasPermission("hr.manage")
+      ? '<button type="button" data-hr-schedules><span>◷</span>Horarios</button><button type="button" data-hr-portal><span>◎</span>Portal</button><button type="button" data-hr-catalogs><span>⚙</span>Catálogos</button>'
+      : "";
+    const compliance = hasPermission("hr.compliance.view")
+      ? '<button type="button" data-hr-compliance><span>◇</span>Cumplimiento</button>'
+      : "";
+    if (!primary && !manageLinks && !compliance) return "";
+    return '<div class="workforce-command-actions">' + primary + '<nav class="hr-command-links" aria-label="Herramientas de Recursos Humanos">' + manageLinks + compliance + '</nav></div>';
   }
   
   let hrComplianceModulePromise = null;
@@ -890,7 +904,8 @@ export function createHrModule(context) {
   
   function hrPeopleScene(control) {
     const pending = control.indicators.pendingRequests;
-    return '<div class="workforce-scene hr-scene" aria-hidden="true"><div class="workforce-grid-floor"></div><div class="hr-ops-header"><span>CENTRO DE PERSONAS</span><i></i><strong>OPERACIÓN ACTIVA</strong></div><div class="hr-ops-platform"></div><div class="hr-console hr-team-console"><header><span>01</span><strong>PLANTILLA</strong></header><div class="hr-avatar-grid"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="hr-console-value"><strong>' + control.indicators.activePeople + '</strong><span>PERSONAS ACTIVAS</span></div><footer><i></i>EXPEDIENTES AL DÍA</footer></div><div class="hr-console hr-request-console"><header><span>02</span><strong>SOLICITUDES</strong></header><div class="hr-request-stack"><i></i><i></i><i></i><span>✓</span></div><div class="hr-console-value"><strong>' + pending + '</strong><span>POR REVISAR</span></div><footer><i></i>PERMISOS Y AUSENCIAS</footer></div><div class="hr-console hr-attendance-console"><header><span>03</span><strong>ROTACIÓN</strong></header><div class="hr-clock-face"><span>↕</span><i></i></div><div class="hr-console-value"><strong>' + inventoryNumber(control.indicators.turnoverRate || 0) + '%</strong><span>ROTACIÓN DEL MES</span></div><footer><i></i>' + control.indicators.staffEntriesMonth + ' ALTAS · ' + control.indicators.staffExitsMonth + ' BAJAS</footer></div><div class="workforce-scene-caption"><span>Plantilla · solicitudes · rotación</span><strong>EQUIPO SINCRONIZADO</strong></div></div>';
+    const turnover = inventoryNumber(control.indicators.turnoverRate || 0);
+    return '<aside class="workforce-scene hr-scene" aria-label="Resumen operativo de Recursos Humanos"><header class="hr-overview-head"><div><span>RESUMEN OPERATIVO</span><strong>Actividad del equipo</strong></div><small><i></i>Actualizado</small></header><div class="hr-overview-grid"><article class="hr-overview-card requests"><span class="hr-overview-number">01</span><div><small>SOLICITUDES</small><strong>' + pending + '</strong><p>pendientes de revisión</p></div><span class="hr-overview-visual request" aria-hidden="true"><i></i><i></i><b>✓</b></span></article><article class="hr-overview-card movements"><span class="hr-overview-number">02</span><div><small>MOVIMIENTOS DEL MES</small><strong>' + control.indicators.staffEntriesMonth + ' <em>altas</em></strong><p>' + control.indicators.staffExitsMonth + ' bajas registradas</p></div><span class="hr-overview-visual movement" aria-hidden="true"><i></i><i></i><i></i></span></article><article class="hr-overview-card turnover"><span class="hr-overview-number">03</span><div><small>ROTACIÓN DEL MES</small><strong>' + turnover + '%</strong><p>seguimiento de plantilla</p></div><span class="hr-overview-visual rotation" aria-hidden="true" style="--hr-turnover:' + Math.min(100, Math.max(0, Number(turnover) || 0)) + '"><i></i></span></article></div><footer class="hr-overview-footer"><span><i></i>Información sincronizada</span><strong>PERSONAL · SOLICITUDES · MOVIMIENTOS</strong></footer></aside>';
   }
   
   function hrEmploymentDetailsMarkup(person = {}) {
