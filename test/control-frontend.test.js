@@ -32,8 +32,24 @@ test("la cuenta ADMIN permite editar accesos sin perder su proteccion", () => {
 });
 
 test("el Centro de Gestion versiona la interfaz corregida", () => {
-  assert.match(html, /styles\.css\?v=20260907-01/);
-  assert.match(html, /app\.js\?v=20260907-01/);
+  assert.match(html, /styles\.css\?v=20260909-01/);
+  assert.match(html, /app\.js\?v=20260909-01/);
+});
+
+test("la creación de empresas continúa en una tarjeta sin bloquear el Gestor", () => {
+  const styles = readFileSync(new URL("../control/styles.css", import.meta.url), "utf8");
+  assert.match(html, /id="companies-grid"[^>]+aria-live="polite"/);
+  assert.match(source, /pendingCompanies: \[\]/);
+  assert.match(source, /function pendingCompanyCard/);
+  assert.match(source, /function beginPendingCompany/);
+  assert.match(source, /function failPendingCompany/);
+  assert.match(source, /Puedes seguir usando el Centro de Gestión/);
+  assert.match(source, /demoCompanyDialog\.close\(\);[^]*api\("\/api\/control\/demo-company"/);
+  assert.match(source, /companyDialog\.close\(\);[^]*api\("\/api\/control\/companies"/);
+  assert.doesNotMatch(source, /title: "Preparando empresa demo"/);
+  assert.match(styles, /\.company-card-pending\.creating::before/);
+  assert.match(styles, /@keyframes pending-company-progress/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test("el Centro de Gestion puede crear una empresa demo precargada", () => {
