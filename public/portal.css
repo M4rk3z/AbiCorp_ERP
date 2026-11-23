@@ -61,3 +61,12 @@
 .login-card .security-note{margin:22px 4px 0;font-size:11px}
 @media(max-width:900px){.public-shell{grid-template-columns:1fr}.public-story{min-height:300px;padding:30px}.story-copy{margin:52px 0}.story-copy h1{font-size:50px}.login-side{padding:36px 22px 54px}.login-card{padding:30px}.public-story footer{margin-top:18px}}
 @media(max-width:540px){.public-story{min-height:280px}.story-copy{margin:44px 0 28px}.story-copy h1{font-size:43px}.lead{font-size:14px}.login-card{border-radius:6px;padding:25px 21px}.login-company{margin-bottom:27px}.login-card h2{font-size:35px}}
+
+/* Sistema de esquinas compartido con el ERP y el Centro de Gestión. */
+:root{--radius-control:9px;--radius-card:14px;--radius-panel:18px;--radius-modal:22px}
+button,input,select,textarea,.pin-field,.portal-sidebar nav button{border-radius:var(--radius-control)}
+.brand-mark,.portal-document-icon{border-radius:var(--radius-control)}
+.login-card,.pin-card,.loading-card,.welcome-card,.balance-card,.info-card,.panel,.empty,.schedule-card,.notification,.coverage-card,.review-card,.review-history,.review-summary,.request-policy-options,.portal-calendar-hero,.portal-document-hero,.portal-calendar-summary,.portal-document-summary span,.portal-document-card{border-radius:var(--radius-card)}
+.data-table,.portal-calendar{overflow:hidden;border-radius:var(--radius-panel)}
+dialog{overflow:hidden;border-radius:var(--radius-modal)}
+@media(max-width:540px){.login-card{border-radius:var(--radius-card)}}
