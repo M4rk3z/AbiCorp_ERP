@@ -4857,7 +4857,6 @@ button.organization-chart-node:hover { border-color: var(--forest); transform: t
 .app-shell .nav-group-toggle { color: #7b9086; }
 .app-shell .nav-group-hr.open > .nav-module-toggle { background: #edf5f0; color: #1b5c42; }
 .app-shell .nav-group-items { margin: 2px 0 5px 13px; border-left: 1px solid #d8e4dd; padding-left: 7px; }
-.app-shell .search-hidden { display: none !important; }
 .app-shell .sidebar-foot { padding-top: 10px; }
 .app-shell .system-health {
   border: 1px solid #dce5df;
@@ -4880,24 +4879,6 @@ button.organization-chart-node:hover { border-color: var(--forest); transform: t
   box-shadow: 0 7px 24px rgba(18, 61, 44, .035);
   backdrop-filter: blur(16px);
 }
-.workspace-search {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  width: clamp(240px, 27vw, 420px);
-  min-height: 42px;
-  margin: 0;
-  border: 1px solid #d9e3dd;
-  border-radius: 12px;
-  padding: 0 13px;
-  background: #f7faf8;
-  color: #647d70;
-  box-shadow: inset 0 1px 2px rgba(18, 61, 44, .02);
-}
-.workspace-search:focus-within { border-color: #4f8f72; background: white; box-shadow: 0 0 0 3px rgba(29, 81, 59, .1); }
-.workspace-search > span { font-size: 1.15rem; line-height: 1; }
-.workspace-search input { width: 100%; min-width: 0; border: 0; padding: 0; background: transparent; color: #20372d; outline: 0; font-size: .75rem; }
-.workspace-search input::placeholder { color: #82978c; }
 .topbar-context { min-width: 130px; }
 .app-shell .topbar h1 { margin-top: 3px; color: #17372a; font-size: 1.05rem; font-weight: 720; }
 .app-shell .breadcrumbs { color: #879b91; font-size: .48rem; letter-spacing: .1em; }
@@ -4942,18 +4923,113 @@ button.organization-chart-node:hover { border-color: var(--forest); transform: t
 .app-shell .hr-command .hr-scene { background: linear-gradient(145deg, #f7faf8, #eaf2ed); }
 
 @media (max-width: 1180px) {
-  .workspace-search { width: min(30vw, 300px); }
   .topbar-context .breadcrumbs { display: none; }
 }
 @media (max-width: 900px) {
-  .workspace-search { width: auto; flex: 1; }
-  .topbar-context { display: none; }
+  .app-shell .topbar h1 { font-size: .94rem; }
 }
 @media (max-width: 580px) {
   .app-shell .topbar { gap: 9px; padding: 11px 12px; }
-  .workspace-search { min-height: 40px; padding-inline: 10px; }
-  .workspace-search input { font-size: .68rem; }
   .app-shell .date-pill { display: none; }
   .app-shell .page-content { padding: 20px 14px 55px; }
   .login-screen .login-card { border: 0; padding: 28px 22px; box-shadow: none; }
+}
+
+/* Auditoría global de superficies: todos los módulos comparten esquinas suaves. */
+.page-content :where(
+  [class$="-card"], [class*="-card "],
+  [class$="-panel"], [class*="-panel "],
+  [class$="-hero"], [class*="-hero "],
+  [class$="-command"], [class*="-command "],
+  [class$="-toolbar"], [class*="-toolbar "],
+  [class$="-summary"], [class*="-summary "],
+  [class$="-notice"], [class*="-notice "],
+  [class$="-settings"], [class*="-settings "],
+  [class$="-filters"], [class*="-filters "],
+  [class$="-menu"], [class*="-menu "],
+  [class$="-section"], [class*="-section "],
+  [class$="-empty"], [class*="-empty "],
+  [class$="-builder"], [class*="-builder "],
+  [class$="-row"], [class*="-row "]
+) {
+  border-radius: var(--radius-card);
+}
+
+.page-content :where(
+  .dashboard-tasks-card,
+  .hr-stat-grid,
+  .hr-team-summary,
+  .hr-vacation-balance-metrics,
+  .hr-leave-confirmation-grid,
+  .hr-schedule-summary,
+  .hr-compliance-metrics,
+  .purchase-detail-metrics,
+  .production-detail-metrics,
+  .quality-result-summary,
+  .maintenance-detail-metrics,
+  .logistics-flow,
+  .logistics-detail-metrics,
+  .task-detail-metrics,
+  .prepayroll-summary,
+  .prepayroll-line-balance,
+  .workforce-hero-stats
+) {
+  overflow: hidden;
+  border-radius: var(--radius-card);
+}
+
+.page-content :where(
+  .catalog-tab,
+  .master-filter,
+  .toggle-field,
+  .settings-section-tabs,
+  .production-order-filters,
+  .hr-analytics-filters button,
+  .hr-catalog-submenu button,
+  .hr-row-actions summary,
+  .warehouse-item-actions button,
+  .payroll-flow-step > span,
+  .risk-score,
+  .carrier-mark,
+  .hr-document-symbol,
+  .hr-profile-access-icon,
+  .hr-bulk-accept-button,
+  .hr-bulk-accept-state
+) {
+  border-radius: var(--radius-control);
+}
+
+.page-content :where(
+  [class$="-metrics"], [class*="-metrics "],
+  [class$="-grid"], [class*="-grid "],
+  [class$="-list"], [class*="-list "],
+  [class$="-findings"], [class*="-findings "],
+  [class$="-steps"], [class*="-steps "]
+) > article {
+  border-radius: var(--radius-card);
+}
+
+.page-content :where(
+  .purchase-metrics article,
+  .purchase-offer-list article,
+  .purchase-order-line-list article,
+  .purchase-receipt-line-list article,
+  .purchase-comparison-cards article,
+  .quality-result-list article,
+  .maintenance-equipment-grid > article,
+  .maintenance-request-list > article,
+  .maintenance-findings article,
+  .logistics-summary-grid article,
+  .logistics-card-list > article,
+  .finance-metrics article,
+  .tasks-metrics article,
+  .approval-step-list article,
+  .flow-detail-steps article,
+  .tasks-event-list > article,
+  .deadline-list > article,
+  .workforce-insight-grid article,
+  .iso-hero-stats article,
+  .iso-month
+) {
+  border-radius: var(--radius-card);
 }
