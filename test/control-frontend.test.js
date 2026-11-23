@@ -32,8 +32,16 @@ test("la cuenta ADMIN permite editar accesos sin perder su proteccion", () => {
 });
 
 test("el Centro de Gestion versiona la interfaz corregida", () => {
-  assert.match(html, /styles\.css\?v=20260909-01/);
-  assert.match(html, /app\.js\?v=20260909-01/);
+  assert.match(html, /styles\.css\?v=20260909-02/);
+  assert.match(html, /app\.js\?v=20260909-02/);
+});
+
+test("el Centro de Gestión usa el mismo sistema de esquinas del ERP", () => {
+  const styles = readFileSync(new URL("../control/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /--radius-sm: 9px/);
+  assert.match(styles, /--radius-md: 14px/);
+  assert.match(styles, /--radius-lg: 18px/);
+  assert.match(styles, /Auditoría global de superficies del Centro de Gestión/);
 });
 
 test("la creación de empresas continúa en una tarjeta sin bloquear el Gestor", () => {
