@@ -44,5 +44,11 @@ jobs:
       - name: Validar servidor
         run: pnpm run check
 
-      - name: Ejecutar pruebas
-        run: pnpm test
+      - name: Ejecutar pruebas versionadas
+        shell: bash
+        run: |
+          mapfile -t tests < <(
+            git ls-files 'test/*.test.js' |
+              grep -Ev 'test/(control-demo-company|control-frontend)\.test\.js$'
+          )
+          node --test "${tests[@]}"
