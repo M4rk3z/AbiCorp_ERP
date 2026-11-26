@@ -8,6 +8,14 @@ coverage/
 .tmp-phase9-preview/
 *.log
 
+# Renders e inspecciones generados al revisar manuales y plantillas
+/tmp/pdfs/
+/outputs/hr-personnel-import/preview-*.png
+/outputs/hr-personnel-import/*.ndjson
+/outputs/*/personal-20/original-*.png
+/outputs/*/personal-20/final-*.png
+/outputs/*/personal-20/*.inspect.ndjson
+
 # Configuracion local cifrada del Centro de Gestion
 config-local/*
 !config-local/LEEME.txt

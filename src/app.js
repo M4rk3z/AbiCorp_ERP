@@ -299,6 +299,38 @@ export function createTenantApplication(options = {}) {
     if (path === "/api/auth/change-password" && method === "POST") return changePassword(req, res, context);
     if (context.user.mustChangePassword) throw new HttpError(428, "Debes cambiar la contraseña inicial.");
 
+    switch (path.split("/", 3)[2]) {
+      case "inventory":
+        return handleInventoryApi(req, res, context, url, method);
+      case "sales":
+        return handleSalesApi(req, res, context, path, method);
+      case "production":
+        return handleProductionApi(req, res, context, path, method);
+      case "quality":
+        return handleQualityApi(req, res, context, path, method);
+      case "maintenance":
+        return handleMaintenanceApi(req, res, context, path, method);
+      case "logistics":
+        return handleLogisticsApi(req, res, context, path, method);
+      case "finance":
+        return handleFinanceApi(req, res, context, path, method);
+      case "tasks":
+        return handleTasksApi(req, res, context, path, method);
+      case "purchases":
+        return handlePurchasesApi(req, res, context, path, method);
+      case "safety":
+        return handleSafetyApi(req, res, context, path, method);
+      case "payroll":
+        return handlePayrollApi(req, res, context, url, method);
+      case "hr":
+        return handleHrApi(req, res, context, url, method);
+      default:
+        return handleCoreApi(req, res, context, url, method);
+    }
+  }
+
+  function handleCoreApi(req, res, context, url, method) {
+    const path = url.pathname;
     if (path === "/api/dashboard" && method === "GET") return dashboard(res, context);
     if (path === "/api/users" && method === "GET") return listUsers(res, context);
     if (path === "/api/users" && method === "POST") return createUser(req, res, context);
@@ -324,6 +356,35 @@ export function createTenantApplication(options = {}) {
     const priceListLineMatch = path.match(/^\/api\/price-lists\/(\d+)\/items\/(\d+)$/);
     if (priceListLineMatch && method === "PATCH") return updatePriceListItem(req, res, context, Number(priceListLineMatch[1]), Number(priceListLineMatch[2]));
     if (priceListLineMatch && method === "DELETE") return deletePriceListItem(req, res, context, Number(priceListLineMatch[1]), Number(priceListLineMatch[2]));
+    if (path === "/api/areas" && method === "GET") return listAreas(res, context);
+    if (path === "/api/areas" && method === "POST") return createArea(req, res, context);
+    const areaMatch = path.match(/^\/api\/areas\/(\d+)$/);
+    if (areaMatch && method === "PATCH") return updateArea(req, res, context, Number(areaMatch[1]));
+    if (path === "/api/audit" && method === "GET") return listAudit(res, context, url);
+    if (path === "/api/folios" && method === "GET") return listFolios(res, context);
+    if (path === "/api/folios" && method === "POST") return createFolio(req, res, context);
+    const folioMatch = path.match(/^\/api\/folios\/(\d+)$/);
+    if (folioMatch && method === "PATCH") return updateFolio(req, res, context, Number(folioMatch[1]));
+    const folioNextMatch = path.match(/^\/api\/folios\/(\d+)\/next$/);
+    if (folioNextMatch && method === "POST") return nextFolio(req, res, context, Number(folioNextMatch[1]));
+    if (path === "/api/documents" && method === "GET") return listDocuments(res, context, url);
+    if (path === "/api/documents" && method === "POST") return uploadDocument(req, res, context);
+    const documentDownloadMatch = path.match(/^\/api\/documents\/(\d+)\/download$/);
+    if (documentDownloadMatch && method === "GET") return downloadDocument(req, res, context, Number(documentDownloadMatch[1]));
+    const documentMatch = path.match(/^\/api\/documents\/(\d+)$/);
+    if (documentMatch && method === "GET") return getDocument(req, res, context, Number(documentMatch[1]));
+    if (documentMatch && method === "DELETE") return deleteDocument(req, res, context, Number(documentMatch[1]));
+    if (path === "/api/settings" && method === "GET") return getSettings(res, context);
+    if (path === "/api/settings" && method === "PATCH") return updateSettings(req, res, context);
+    if (path === "/api/notifications" && method === "GET") return listNotifications(res, context);
+    if (path === "/api/notifications" && method === "POST") return createNotification(req, res, context);
+    const notificationMatch = path.match(/^\/api\/notifications\/(\d+)\/read$/);
+    if (notificationMatch && method === "PATCH") return readNotification(res, context, Number(notificationMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleInventoryApi(req, res, context, url, method) {
+    const path = url.pathname;
     if (path === "/api/inventory/overview" && method === "GET") return inventoryOverview(res, context);
     if (path === "/api/inventory/options" && method === "GET") return inventoryOptions(res, context);
     if (path === "/api/inventory/balances" && method === "GET") return inventoryBalances(res, context);
@@ -356,6 +417,10 @@ export function createTenantApplication(options = {}) {
     if (inventoryCountLineMatch && method === "PATCH") return inventoryCountLineUpdate(req, res, context, Number(inventoryCountLineMatch[1]), Number(inventoryCountLineMatch[2]));
     const inventoryCountCompleteMatch = path.match(/^\/api\/inventory\/counts\/(\d+)\/complete$/);
     if (inventoryCountCompleteMatch && method === "POST") return inventoryCountComplete(req, res, context, Number(inventoryCountCompleteMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleSalesApi(req, res, context, path, method) {
     if (path === "/api/sales/options" && method === "GET") return salesOptions(res, context);
     if (path === "/api/sales/control" && method === "GET") return salesControl(res, context);
     if (path === "/api/sales/prospects" && method === "GET") return salesProspects(res, context);
@@ -371,6 +436,10 @@ export function createTenantApplication(options = {}) {
     if (salesDocumentMatch && method === "GET") return salesDocumentDetail(res, context, Number(salesDocumentMatch[1]));
     const salesDocumentActionMatch = path.match(/^\/api\/sales\/documents\/(\d+)\/action$/);
     if (salesDocumentActionMatch && method === "POST") return salesDocumentAction(req, res, context, Number(salesDocumentActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleProductionApi(req, res, context, path, method) {
     if (path === "/api/production/options" && method === "GET") return productionOptions(res, context);
     if (path === "/api/production/control" && method === "GET") return productionControl(res, context);
     if (path === "/api/production/boms" && method === "POST") return productionBomCreate(req, res, context);
@@ -381,6 +450,10 @@ export function createTenantApplication(options = {}) {
     if (productionOrderMatch && method === "GET") return productionOrderDetail(res, context, Number(productionOrderMatch[1]));
     const productionOrderActionMatch = path.match(/^\/api\/production\/orders\/(\d+)\/action$/);
     if (productionOrderActionMatch && method === "POST") return productionOrderAction(req, res, context, Number(productionOrderActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleQualityApi(req, res, context, path, method) {
     if (path === "/api/quality/options" && method === "GET") return qualityOptions(res, context);
     if (path === "/api/quality/control" && method === "GET") return qualityControl(res, context);
     if (path === "/api/quality/plans" && method === "POST") return qualityPlanCreate(req, res, context);
@@ -395,6 +468,10 @@ export function createTenantApplication(options = {}) {
     if (path === "/api/quality/corrective-actions" && method === "POST") return qualityCorrectiveActionCreate(req, res, context);
     const qualityCorrectiveActionMatch = path.match(/^\/api\/quality\/corrective-actions\/(\d+)$/);
     if (qualityCorrectiveActionMatch && method === "PATCH") return qualityCorrectiveActionUpdate(req, res, context, Number(qualityCorrectiveActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleMaintenanceApi(req, res, context, path, method) {
     if (path === "/api/maintenance/options" && method === "GET") return maintenanceOptions(res, context);
     if (path === "/api/maintenance/control" && method === "GET") return maintenanceControl(res, context);
     if (path === "/api/maintenance/equipment" && method === "POST") return maintenanceEquipmentCreate(req, res, context);
@@ -410,6 +487,10 @@ export function createTenantApplication(options = {}) {
     if (maintenanceOrderMatch && method === "GET") return maintenanceOrderDetail(res, context, Number(maintenanceOrderMatch[1]));
     const maintenanceOrderActionMatch = path.match(/^\/api\/maintenance\/orders\/(\d+)\/action$/);
     if (maintenanceOrderActionMatch && method === "POST") return maintenanceOrderAction(req, res, context, Number(maintenanceOrderActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleLogisticsApi(req, res, context, path, method) {
     if (path === "/api/logistics/options" && method === "GET") return logisticsOptions(res, context);
     if (path === "/api/logistics/control" && method === "GET") return logisticsControl(res, context);
     if (path === "/api/logistics/carriers" && method === "POST") return logisticsCarrierCreate(req, res, context);
@@ -420,6 +501,10 @@ export function createTenantApplication(options = {}) {
     if (logisticsShipmentMatch && method === "GET") return logisticsShipmentDetail(res, context, Number(logisticsShipmentMatch[1]));
     const logisticsShipmentActionMatch = path.match(/^\/api\/logistics\/shipments\/(\d+)\/action$/);
     if (logisticsShipmentActionMatch && method === "POST") return logisticsShipmentAction(req, res, context, Number(logisticsShipmentActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleFinanceApi(req, res, context, path, method) {
     if (path === "/api/finance/options" && method === "GET") return financeOptions(res, context);
     if (path === "/api/finance/control" && method === "GET") return financeControl(res, context);
     if (path === "/api/finance/cost-centers" && method === "POST") return financeCostCenterCreate(req, res, context);
@@ -432,6 +517,10 @@ export function createTenantApplication(options = {}) {
     if (path === "/api/finance/reconciliations" && method === "POST") return financeReconciliationCreate(req, res, context);
     const financeReconciliationActionMatch = path.match(/^\/api\/finance\/reconciliations\/(\d+)\/action$/);
     if (financeReconciliationActionMatch && method === "POST") return financeReconciliationAction(req, res, context, Number(financeReconciliationActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handleTasksApi(req, res, context, path, method) {
     if (path === "/api/tasks/options" && method === "GET") return tasksOptions(res, context);
     if (path === "/api/tasks/control" && method === "GET") return tasksControl(res, context);
     if (path === "/api/tasks/flows" && method === "POST") return tasksFlowCreate(req, res, context);
@@ -444,6 +533,10 @@ export function createTenantApplication(options = {}) {
     if (taskCommentMatch && method === "POST") return taskCommentCreate(req, res, context, Number(taskCommentMatch[1]));
     const taskActionMatch = path.match(/^\/api\/tasks\/(\d+)\/action$/);
     if (taskActionMatch && method === "POST") return taskAction(req, res, context, Number(taskActionMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handlePurchasesApi(req, res, context, path, method) {
     if (path === "/api/purchases/options" && method === "GET") return purchasesOptions(res, context);
     if (path === "/api/purchases/control" && method === "GET") return purchasesControl(res, context);
     if (path === "/api/purchases/requests" && method === "POST") return purchaseRequestCreate(req, res, context);
@@ -466,6 +559,10 @@ export function createTenantApplication(options = {}) {
     if (purchaseReceiptMatch && method === "GET") return purchaseReceiptDetail(res, context, Number(purchaseReceiptMatch[1]));
     if (path === "/api/purchases/returns" && method === "POST") return purchaseReturnCreate(req, res, context);
     if (path === "/api/purchases/invoices" && method === "POST") return purchaseInvoiceCreate(req, res, context);
+    throw apiRouteNotFound();
+  }
+
+  function handleSafetyApi(req, res, context, path, method) {
     if (path === "/api/safety/options" && method === "GET") return safetyOptions(res, context);
     if (path === "/api/safety/control" && method === "GET") return safetyControl(res, context);
     if (path === "/api/safety/incidents" && method === "POST") return safetyIncidentCreate(req, res, context);
@@ -478,17 +575,11 @@ export function createTenantApplication(options = {}) {
     if (safetyRiskActionMatch && method === "POST") return safetyRiskAction(req, res, context, Number(safetyRiskActionMatch[1]));
     const safetyComplianceActionMatch = path.match(/^\/api\/safety\/compliance\/(\d+)\/action$/);
     if (safetyComplianceActionMatch && method === "POST") return safetyComplianceAction(req, res, context, Number(safetyComplianceActionMatch[1]));
-    if (path === "/api/hr/options" && method === "GET") return hrOptions(res, context);
-    if (path === "/api/hr/structure" && method === "GET") return hrStructure(res, context);
-    if (path === "/api/hr/structure/companies" && method === "POST") return hrCompanyCreate(req, res, context);
-    const hrCompanyMatch = path.match(/^\/api\/hr\/structure\/companies\/(\d+)$/);
-    if (hrCompanyMatch && method === "PATCH") return hrCompanyUpdate(req, res, context, Number(hrCompanyMatch[1]));
-    if (path === "/api/hr/structure/work-centers" && method === "POST") return hrWorkCenterCreate(req, res, context);
-    const hrWorkCenterStructureMatch = path.match(/^\/api\/hr\/structure\/work-centers\/(\d+)$/);
-    if (hrWorkCenterStructureMatch && method === "PATCH") return hrWorkCenterUpdate(req, res, context, Number(hrWorkCenterStructureMatch[1]));
-    if (path === "/api/hr/structure/departments" && method === "POST") return hrDepartmentCreate(req, res, context);
-    const hrDepartmentStructureMatch = path.match(/^\/api\/hr\/structure\/departments\/(\d+)$/);
-    if (hrDepartmentStructureMatch && method === "PATCH") return hrDepartmentUpdate(req, res, context, Number(hrDepartmentStructureMatch[1]));
+    throw apiRouteNotFound();
+  }
+
+  function handlePayrollApi(req, res, context, url, method) {
+    const path = url.pathname;
     if (path === "/api/payroll/control" && method === "GET") return payrollControl(res, context, url.searchParams);
     if (path === "/api/payroll/periods" && method === "POST") return payrollPeriodCreate(req, res, context);
     if (path === "/api/payroll/preparation/generate" && method === "POST") return payrollPreparationGenerate(req, res, context);
@@ -505,6 +596,22 @@ export function createTenantApplication(options = {}) {
     const payrollCfdiFileMatch = path.match(/^\/api\/payroll\/cfdi\/receipts\/(\d+)\/files\/(\d+)$/);
     if (payrollCfdiFileMatch && method === "GET")
       return payrollCfdiFileDownload(req, res, context, Number(payrollCfdiFileMatch[1]), Number(payrollCfdiFileMatch[2]));
+    throw apiRouteNotFound();
+  }
+
+  function handleHrApi(req, res, context, url, method) {
+    const path = url.pathname;
+    if (path === "/api/hr/options" && method === "GET") return hrOptions(res, context);
+    if (path === "/api/hr/structure" && method === "GET") return hrStructure(res, context);
+    if (path === "/api/hr/structure/companies" && method === "POST") return hrCompanyCreate(req, res, context);
+    const hrCompanyMatch = path.match(/^\/api\/hr\/structure\/companies\/(\d+)$/);
+    if (hrCompanyMatch && method === "PATCH") return hrCompanyUpdate(req, res, context, Number(hrCompanyMatch[1]));
+    if (path === "/api/hr/structure/work-centers" && method === "POST") return hrWorkCenterCreate(req, res, context);
+    const hrWorkCenterStructureMatch = path.match(/^\/api\/hr\/structure\/work-centers\/(\d+)$/);
+    if (hrWorkCenterStructureMatch && method === "PATCH") return hrWorkCenterUpdate(req, res, context, Number(hrWorkCenterStructureMatch[1]));
+    if (path === "/api/hr/structure/departments" && method === "POST") return hrDepartmentCreate(req, res, context);
+    const hrDepartmentStructureMatch = path.match(/^\/api\/hr\/structure\/departments\/(\d+)$/);
+    if (hrDepartmentStructureMatch && method === "PATCH") return hrDepartmentUpdate(req, res, context, Number(hrDepartmentStructureMatch[1]));
     if (path === "/api/hr/control" && method === "GET") return hrControl(res, context);
     if (path === "/api/hr/compliance" && method === "GET") return hrComplianceControl(res, context);
     if (path === "/api/hr/compliance/grievances" && method === "POST") return hrGrievanceCreate(req, res, context);
@@ -580,31 +687,11 @@ export function createTenantApplication(options = {}) {
     if (hrPortalAccessMatch && method === "PATCH") return hrPortalEmployeeUpdate(req, res, context, Number(hrPortalAccessMatch[1]));
     const hrPortalResetMatch = path.match(/^\/api\/hr\/portal\/employees\/(\d+)\/reset-pin$/);
     if (hrPortalResetMatch && method === "POST") return hrPortalEmployeeReset(req, res, context, Number(hrPortalResetMatch[1]));
-    if (path === "/api/areas" && method === "GET") return listAreas(res, context);
-    if (path === "/api/areas" && method === "POST") return createArea(req, res, context);
-    const areaMatch = path.match(/^\/api\/areas\/(\d+)$/);
-    if (areaMatch && method === "PATCH") return updateArea(req, res, context, Number(areaMatch[1]));
-    if (path === "/api/audit" && method === "GET") return listAudit(res, context, url);
-    if (path === "/api/folios" && method === "GET") return listFolios(res, context);
-    if (path === "/api/folios" && method === "POST") return createFolio(req, res, context);
-    const folioMatch = path.match(/^\/api\/folios\/(\d+)$/);
-    if (folioMatch && method === "PATCH") return updateFolio(req, res, context, Number(folioMatch[1]));
-    const folioNextMatch = path.match(/^\/api\/folios\/(\d+)\/next$/);
-    if (folioNextMatch && method === "POST") return nextFolio(req, res, context, Number(folioNextMatch[1]));
-    if (path === "/api/documents" && method === "GET") return listDocuments(res, context, url);
-    if (path === "/api/documents" && method === "POST") return uploadDocument(req, res, context);
-    const documentDownloadMatch = path.match(/^\/api\/documents\/(\d+)\/download$/);
-    if (documentDownloadMatch && method === "GET") return downloadDocument(req, res, context, Number(documentDownloadMatch[1]));
-    const documentMatch = path.match(/^\/api\/documents\/(\d+)$/);
-    if (documentMatch && method === "GET") return getDocument(req, res, context, Number(documentMatch[1]));
-    if (documentMatch && method === "DELETE") return deleteDocument(req, res, context, Number(documentMatch[1]));
-    if (path === "/api/settings" && method === "GET") return getSettings(res, context);
-    if (path === "/api/settings" && method === "PATCH") return updateSettings(req, res, context);
-    if (path === "/api/notifications" && method === "GET") return listNotifications(res, context);
-    if (path === "/api/notifications" && method === "POST") return createNotification(req, res, context);
-    const notificationMatch = path.match(/^\/api\/notifications\/(\d+)\/read$/);
-    if (notificationMatch && method === "PATCH") return readNotification(res, context, Number(notificationMatch[1]));
-    throw new HttpError(404, "Ruta no encontrada.");
+    throw apiRouteNotFound();
+  }
+
+  function apiRouteNotFound() {
+    return new HttpError(404, "Ruta no encontrada.");
   }
 
   async function portalLogin(req, res) {

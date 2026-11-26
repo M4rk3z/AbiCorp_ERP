@@ -1,0 +1,87 @@
+ABICORP ERP | MAPA DE RUTAS
+==========================
+Las rutas de archivos son relativas a la raíz del proyecto.
+
+ENTRADAS Y AMBIENTES LOCALES
+---------------------------
+ERP local         http://127.0.0.1:5050         pnpm dev
+Portal local      http://127.0.0.1:5050/portal  Mismo servidor ERP
+ERP de pruebas    http://127.0.0.1:5150         INICIAR_AMBIENTE_PRUEBAS.cmd
+Gestor de pruebas http://127.0.0.1:5151         Mismo arrancador de pruebas
+Gestor local      http://127.0.0.1:5051         INICIAR_GESTOR_ABICORP.cmd
+
+El arrancador conjunto necesita el Gestor local y PostgreSQL de pruebas.
+DETENER_AMBIENTE_PRUEBAS.cmd detiene los dos servicios de pruebas.
+
+ARCHIVOS PRINCIPALES
+--------------------
+src/erp-server.js       Arranque HTTP del ERP y configuración de puerto.
+src/app.js              Selección de empresa, sesiones y rutas HTTP del ERP.
+src/core/               Reglas de negocio por módulo.
+src/db/index.js         Inicialización de la base del ERP.
+src/db/schema.js        Esquema y migraciones del ERP.
+src/db/control.js       Registro de empresas y base del Gestor.
+public/index.html       Página de entrada al ERP.
+public/app.js           Menú, navegación y vistas. Buscar navigate(view).
+public/styles.css       Estilos compartidos del ERP.
+public/modules/hr.js    Vistas y formularios de Gestión de personal.
+public/modules/hr-compliance.js  Vista de cumplimiento de RH.
+public/portal.html      Página de entrada al Portal del colaborador.
+public/portal.js        Navegación y solicitudes del Portal.
+public/portal.css       Estilos del Portal.
+test/                  Pruebas automatizadas.
+.github/workflows/ci.yml  Validaciones de GitHub para develop y main.
+docs/                  Guías de operación e incorporación.
+POSTGRESQL.md           Configuración y procedimientos de PostgreSQL.
+
+El ERP tiene una sola página. Las claves como inventory_stock o hr_control
+son vistas internas definidas en public/app.js. Las rutas /api/... son
+solicitudes del frontend al servidor.
+
+ERP | API POR MÓDULO
+--------------------
+En src/app.js, buscar el nombre de la función para ver los métodos,
+las rutas con identificadores y el código que atiende cada solicitud.
+
+Ruta o prefijo           Función en src/app.js   Reglas de negocio
+/api/companies           createApplication      src/db/control.js
+/api/health              handleApi              Verificación HTTP de Render
+/api/auth/               handleApi              src/core/security.js
+/api/portal/             handlePortalApi        src/core/hr-portal.js
+/api/dashboard           handleCoreApi          src/app.js
+/api/users/, /api/roles/ handleCoreApi          src/core/access.js
+/api/catalogs/           handleCoreApi          src/core/catalogs.js
+/api/masters/            handleCoreApi          src/core/masters.js
+/api/price-lists/        handleCoreApi          src/core/masters.js
+/api/areas, /api/folios  handleCoreApi          src/app.js
+/api/documents           handleCoreApi          src/core/private-storage.js
+/api/audit, /api/settings, /api/notifications   handleCoreApi
+/api/inventory/          handleInventoryApi     src/core/inventory.js
+/api/sales/              handleSalesApi         src/core/sales.js
+/api/production/         handleProductionApi    src/core/production.js
+/api/quality/            handleQualityApi       src/core/quality.js
+/api/maintenance/        handleMaintenanceApi   src/core/maintenance.js
+/api/logistics/          handleLogisticsApi      src/core/logistics.js
+/api/finance/            handleFinanceApi       src/core/finance.js
+/api/tasks               handleTasksApi         src/core/tasks.js
+/api/purchases/          handlePurchasesApi     src/core/purchases.js
+/api/safety/             handleSafetyApi        src/core/safety.js
+/api/hr/                 handleHrApi            src/core/hr.js y src/core/hr-*.js
+/api/payroll/            handlePayrollApi       src/core/payroll-*.js
+
+Ejemplos de búsqueda
+  Almacén: GET /api/inventory/overview         Vista inventory_stock.
+  Gestión de personal: GET /api/hr/control     Vista hr_control.
+  Nómina y CFDI: GET /api/payroll/control      Vista payroll_control.
+  Estado del ERP: GET /api/health              Health Check Path de Render.
+
+CENTRO DE GESTIÓN | COPIA LOCAL
+-------------------------------
+src/control-server.js  Arranque del servidor del Gestor.
+src/control-app.js     Aplicación y rutas /api/control/.
+control/              Interfaz web del Gestor.
+config-local/LEEME.txt  Guía de configuración local.
+
+El Gestor está excluido del repositorio. Su código y su configuración
+privada se obtienen por separado. data/ guarda datos locales y backups/
+contiene respaldos. Los datos y las credenciales quedan fuera de Git.
